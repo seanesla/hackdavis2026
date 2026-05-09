@@ -8,7 +8,11 @@ const examples = [
 ];
 
 export default function PromptPanel() {
-  const { prompt, setPrompt, runMock, steps, running } = useStore();
+  const prompt = useStore((s) => s.prompt);
+  const setPrompt = useStore((s) => s.setPrompt);
+  const runMock = useStore((s) => s.runMock);
+  const steps = useStore((s) => s.steps);
+  const running = useStore((s) => s.running);
 
   return (
     <aside className="w-[380px] shrink-0 h-screen border-r border-zinc-800 bg-zinc-950 text-zinc-100 flex flex-col">
