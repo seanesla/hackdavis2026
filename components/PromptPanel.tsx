@@ -1,5 +1,6 @@
 "use client";
 import { useStore } from "@/lib/store";
+import PastPlans from "./PastPlans";
 
 const examples = [
   "0.5 acre lot, 25 ft front setback, 10 ft sides, fit a 3-story building with 12 parking spots.",
@@ -48,6 +49,10 @@ export default function PromptPanel() {
               {ex}
             </button>
           ))}
+        </div>
+
+        <div className="pt-2">
+          <PastPlans />
         </div>
       </div>
 
