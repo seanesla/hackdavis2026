@@ -24,22 +24,8 @@ export const useAccent = create<State>()(
   persist(
     (set) => ({
       accent: ACCENTS[0],
-      setAccent: (a) => {
-        set({ accent: a });
-        if (typeof document !== "undefined") {
-          document.documentElement.style.setProperty("--color-accent", a.hex);
-          document.documentElement.style.setProperty("--color-accent-soft", a.soft);
-        }
-      },
+      setAccent: (a) => set({ accent: a }),
     }),
-    {
-      name: "parcel-accent",
-      onRehydrateStorage: () => (s) => {
-        if (s && typeof document !== "undefined") {
-          document.documentElement.style.setProperty("--color-accent", s.accent.hex);
-          document.documentElement.style.setProperty("--color-accent-soft", s.accent.soft);
-        }
-      },
-    }
+    { name: "parcel-accent" }
   )
 );
