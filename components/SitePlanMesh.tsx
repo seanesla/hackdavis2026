@@ -8,6 +8,12 @@ import { STORY_HEIGHT_FT, type SitePlan } from "@/lib/types";
 
 const SCAFFOLD_BOX = { w: 30, d: 30, h: 24 };
 
+const Y = {
+  lotTop: 0.1,
+  setbackLine: 0.15,
+  stallTop: 0.3,
+};
+
 const COLORS = {
   ground: "#9ca3af",
   lotFill: "#ecfccb",
@@ -81,7 +87,7 @@ function Lot({ lot }: { lot: SitePlan["lot"] }) {
   useFrame((_, dt) => {
     const m = ref.current;
     if (!m) return;
-    const k = 1 - Math.exp(-dt * 8);
+    const k = 1 - Math.exp(-dt * 9);
     m.scale.x = THREE.MathUtils.lerp(m.scale.x, 1, k);
     m.scale.z = THREE.MathUtils.lerp(m.scale.z, 1, k);
   });
@@ -90,11 +96,11 @@ function Lot({ lot }: { lot: SitePlan["lot"] }) {
     <group>
       <mesh
         ref={ref}
-        position={[lot.width / 2, 0.05, lot.depth / 2]}
+        position={[lot.width / 2, Y.lotTop / 2, lot.depth / 2]}
         scale={[0.001, 1, 0.001]}
         receiveShadow
       >
-        <boxGeometry args={[lot.width, 0.1, lot.depth]} />
+        <boxGeometry args={[lot.width, Y.lotTop, lot.depth]} />
         <meshStandardMaterial color={COLORS.lotFill} />
         <Edges color={COLORS.lotEdge} lineWidth={1.5} />
       </mesh>
@@ -119,13 +125,12 @@ function SetbackEnvelope({
   const x1 = lot.width - setbacks.side;
   const z0 = setbacks.front;
   const z1 = lot.depth - setbacks.back;
-  const y = 0.12;
   const points: [number, number, number][] = [
-    [x0, y, z0],
-    [x1, y, z0],
-    [x1, y, z1],
-    [x0, y, z1],
-    [x0, y, z0],
+    [x0, Y.setbackLine, z0],
+    [x1, Y.setbackLine, z0],
+    [x1, Y.setbackLine, z1],
+    [x0, Y.setbackLine, z1],
+    [x0, Y.setbackLine, z0],
   ];
   return (
     <Line
@@ -141,11 +146,18 @@ function SetbackEnvelope({
   );
 }
 
-function useDrop(restY: number, dropHeight: number, delay = 0) {
-  const ref = useRef<THREE.Mesh>(null);
+// Gravity-based drop with bounce-on-floor. Mesh physically cannot pass
+// through the rest position, so no clipping through the ground.
+function useDrop<T extends THREE.Object3D>(
+  restY: number,
+  dropHeight: number,
+  delay = 0
+) {
+  const ref = useRef<T>(null);
   const yRef = useRef(restY + dropHeight);
   const velRef = useRef(0);
   const elapsed = useRef(0);
+  const settled = useRef(false);
 
   useFrame((_, dt) => {
     const m = ref.current;
@@ -155,12 +167,29 @@ function useDrop(restY: number, dropHeight: number, delay = 0) {
       m.position.y = restY + dropHeight;
       return;
     }
-    const stiffness = 65;
-    const damping = 9;
-    const force = (restY - yRef.current) * stiffness;
-    const dampForce = -velRef.current * damping;
-    velRef.current += (force + dampForce) * dt;
-    yRef.current += velRef.current * dt;
+    if (settled.current) {
+      m.position.y = restY;
+      return;
+    }
+
+    const gravity = -160;
+    const restitution = 0.3;
+    const settleSpeed = 1.5;
+    const dtClamped = Math.min(dt, 1 / 30);
+
+    velRef.current += gravity * dtClamped;
+    yRef.current += velRef.current * dtClamped;
+
+    if (yRef.current <= restY) {
+      yRef.current = restY;
+      if (Math.abs(velRef.current) < settleSpeed) {
+        velRef.current = 0;
+        settled.current = true;
+      } else {
+        velRef.current = -velRef.current * restitution;
+      }
+    }
+
     m.position.y = yRef.current;
   });
 
@@ -177,17 +206,12 @@ function Building({
   const height = building.stories * STORY_HEIGHT_FT;
   const cx = building.x + building.w / 2;
   const cz = building.z + building.d / 2;
-  const restY = height / 2;
-  const ref = useDrop(restY, 80, 0);
+  const restY = Y.lotTop + height / 2;
+  const ref = useDrop<THREE.Group>(restY, 50);
 
   return (
-    <group>
-      <mesh
-        ref={ref}
-        position={[cx, restY + 80, cz]}
-        castShadow
-        receiveShadow
-      >
+    <group ref={ref} position={[cx, restY + 50, cz]}>
+      <mesh castShadow receiveShadow>
         <boxGeometry args={[building.w, height, building.d]} />
         <meshStandardMaterial
           color={valid ? COLORS.building : COLORS.buildingInvalid}
@@ -195,7 +219,7 @@ function Building({
         <Edges color={COLORS.buildingEdge} lineWidth={1} />
       </mesh>
 
-      <Html position={[cx, height + 6, cz]} center distanceFactor={120}>
+      <Html position={[0, height / 2 + 6, 0]} center distanceFactor={120}>
         <div className="whitespace-nowrap rounded bg-blue-600/95 px-2 py-1 text-[11px] font-semibold text-white shadow">
           {building.w}×{building.d} ft · {building.stories} stories
           {!valid && <span className="ml-1 text-amber-200">· setback violation</span>}
@@ -206,16 +230,17 @@ function Building({
 }
 
 function ParkingStall({ index, x, z }: { index: number; x: number; z: number }) {
-  const restY = 0.13;
-  const ref = useDrop(restY, 35, index * 0.06);
+  const stallThickness = 0.2;
+  const restY = Y.stallTop - stallThickness / 2;
+  const ref = useDrop<THREE.Mesh>(restY, 18, index * 0.05);
 
   return (
     <mesh
       ref={ref}
-      position={[x + 4.5, restY + 35, z + 9]}
+      position={[x + 4.5, restY + 18, z + 9]}
       receiveShadow
     >
-      <boxGeometry args={[9, 0.1, 18]} />
+      <boxGeometry args={[9, stallThickness, 18]} />
       <meshStandardMaterial color={COLORS.stall} />
       <Edges color={COLORS.stallStripe} lineWidth={1} />
     </mesh>
