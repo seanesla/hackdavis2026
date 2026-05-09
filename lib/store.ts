@@ -9,7 +9,8 @@ type State = {
   running: boolean;
   prompt: string;
   setPrompt: (s: string) => void;
-  runMock: () => void;
+  runFromPrompt: (p: string) => void;
+  reset: () => void;
 };
 
 export const useStore = create<State>((set, get) => ({
@@ -18,16 +19,17 @@ export const useStore = create<State>((set, get) => ({
   running: false,
   prompt: "",
   setPrompt: (s) => set({ prompt: s }),
-  runMock: () => {
+  reset: () => set({ plan: null, steps: [], running: false }),
+  runFromPrompt: (p) => {
     if (get().running) return;
-    set({ running: true, steps: [], plan: null });
+    set({ running: true, steps: [], plan: null, prompt: p });
     mockSteps.forEach((step, i) => {
       setTimeout(() => {
         set((s) => ({ steps: [...s.steps, step] }));
         if (i === mockSteps.length - 1) {
           set({ plan: mockPlan, running: false });
         }
-      }, 600 * (i + 1));
+      }, 700 * (i + 1));
     });
   },
 }));
