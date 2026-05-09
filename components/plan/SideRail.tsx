@@ -1,12 +1,44 @@
 "use client";
+import { useEffect, useState } from "react";
 import { motion } from "framer-motion";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useStore } from "@/lib/store";
 import Step from "./Step";
 import AccentPicker from "@/components/AccentPicker";
 
 export default function SideRail() {
-  const { prompt, steps, running } = useStore();
+  const prompt = useStore((s) => s.prompt);
+  const steps = useStore((s) => s.steps);
+  const running = useStore((s) => s.running);
+  const runFromPrompt = useStore((s) => s.runFromPrompt);
+  const router = useRouter();
+
+  const [draft, setDraft] = useState(prompt);
+
+  // Keep the textarea synced when the store's prompt changes (e.g. on first
+  // landing-page submit). Doesn't clobber edits in progress because effect
+  // only fires when the underlying `prompt` value actually changes.
+  useEffect(() => {
+    setDraft(prompt);
+  }, [prompt]);
+
+  const submit = () => {
+    const trimmed = draft.trim();
+    if (!trimmed || running || trimmed === prompt) return;
+    // Reflect the new prompt in the URL so refreshing reproduces this run.
+    router.replace(`/plan?prompt=${encodeURIComponent(trimmed)}`);
+    runFromPrompt(trimmed);
+  };
+
+  const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+      e.preventDefault();
+      submit();
+    }
+  };
+
+  const dirty = draft.trim() !== prompt && draft.trim().length > 0;
 
   return (
     <motion.aside
@@ -28,9 +60,27 @@ export default function SideRail() {
         <div className="mt-5 text-[10px] uppercase tracking-[0.2em] text-mute font-mono">
           brief
         </div>
-        <p className="mt-2 font-mono text-[13px] text-paper/80 leading-relaxed">
-          {prompt || "—"}
-        </p>
+        <textarea
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={onKeyDown}
+          disabled={running}
+          rows={3}
+          className="mt-2 w-full resize-none bg-transparent font-mono text-[13px] text-paper/90 leading-relaxed focus:outline-none disabled:opacity-50 placeholder:text-mute/40"
+          placeholder="describe the site…"
+        />
+        <div className="mt-2 flex items-center justify-between">
+          <span className="font-mono text-[9px] uppercase tracking-[0.2em] text-mute/50">
+            ⌘↵ to re-plan
+          </span>
+          <button
+            onClick={submit}
+            disabled={!dirty || running}
+            className="font-mono text-[10px] uppercase tracking-[0.2em] px-2.5 py-1 rounded border border-rule/60 text-mute hover:text-accent hover:border-accent/40 disabled:opacity-30 disabled:hover:text-mute disabled:hover:border-rule/60 transition-colors"
+          >
+            re-plan
+          </button>
+        </div>
       </div>
 
       <div className="flex items-center gap-2 px-6 py-3 border-b border-rule/60">

@@ -15,13 +15,13 @@ const AccentGrainient = dynamic(
 function PlanInner() {
   const params = useSearchParams();
   const promptParam = params.get("prompt") ?? "";
-  const { runFromPrompt, prompt, running, steps } = useStore();
+  const { runFromPrompt, prompt, running } = useStore();
 
   useEffect(() => {
-    if (promptParam && promptParam !== prompt && !running && steps.length === 0) {
+    if (promptParam && promptParam !== prompt && !running) {
       runFromPrompt(promptParam);
     }
-  }, [promptParam, prompt, running, steps.length, runFromPrompt]);
+  }, [promptParam, prompt, running, runFromPrompt]);
 
   return (
     <div className="relative flex h-screen w-screen overflow-hidden">
