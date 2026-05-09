@@ -1,17 +1,29 @@
 import type { SitePlan, Step } from "./types";
 
 export const mockSteps: Step[] = [
-  { tool: "set_lot", note: "Set 0.5 acre lot (147 x 147 ft)", ok: true },
-  { tool: "place_building", note: "Placed 50x30 ft, 3-story building", ok: true },
-  { tool: "check_setbacks", note: "Front 25 / sides 10 / back 20 — OK", ok: true },
-  { tool: "place_parking", note: "Fit 12 stalls along the back edge", ok: true },
-  { tool: "finalize", note: "Plan validated", ok: true },
+  { tool: "set_lot", note: "lot squared. 147 by 147 feet.", ok: true },
+  {
+    tool: "place_building",
+    note: "60 by 40, three stories, tucked inside the setbacks.",
+    ok: true,
+  },
+  {
+    tool: "check_setbacks",
+    note: "front 25, sides 10, back 20. lines hold.",
+    ok: true,
+  },
+  {
+    tool: "place_parking",
+    note: "twelve stalls along the east hedge.",
+    ok: true,
+  },
+  { tool: "finalize", note: "checked twice. ready.", ok: true },
 ];
 
 // Coordinates: origin = front-left corner of lot; +x = right, +z = back. Feet.
 const LOT = { width: 147, depth: 147 };
 const SETBACKS = { front: 25, back: 20, side: 10 };
-const BUILDING = { x: 48, z: 30, w: 50, d: 30, stories: 3 };
+const BUILDING = { x: 43, z: 30, w: 60, d: 40, stories: 3 };
 
 const STALL_W = 9;
 const STALL_D = 18;

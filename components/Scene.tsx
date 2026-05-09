@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import { Grid, OrbitControls } from "@react-three/drei";
 import * as THREE from "three";
@@ -10,14 +10,19 @@ import type { SitePlan } from "@/lib/types";
 type Props = { siteplan?: SitePlan | null };
 
 export default function Scene({ siteplan }: Props) {
-  return (
-    <Canvas shadows camera={{ position: [120, 120, 120], fov: 45 }}>
-      <color attach="background" args={["#f3f4f6"]} />
+  const [interacted, setInteracted] = useState(false);
 
-      <ambientLight intensity={0.4} />
+  return (
+    <Canvas
+      shadows
+      gl={{ alpha: true }}
+      camera={{ position: [120, 110, 140], fov: 42 }}
+      onPointerDown={() => setInteracted(true)}
+    >
+      <ambientLight intensity={0.55} />
       <directionalLight
         position={[80, 120, 60]}
-        intensity={1.2}
+        intensity={1.1}
         castShadow
         shadow-mapSize={[2048, 2048]}
         shadow-camera-left={-200}
@@ -27,26 +32,28 @@ export default function Scene({ siteplan }: Props) {
         shadow-camera-near={1}
         shadow-camera-far={400}
       />
+
+      {/* Invisible shadow catcher — lets ContourBackground show through */}
       <mesh
         rotation={[-Math.PI / 2, 0, 0]}
         position={[0, -0.05, 0]}
         receiveShadow
       >
         <planeGeometry args={[1000, 1000]} />
-        <meshStandardMaterial color="#9ca3af" />
+        <shadowMaterial transparent opacity={0.35} />
       </mesh>
 
       <Grid
         args={[500, 500]}
         position={[0, 0, 0]}
         cellSize={10}
-        cellThickness={0.6}
-        cellColor="#6b7280"
+        cellThickness={0.5}
+        cellColor="#3f3f46"
         sectionSize={50}
-        sectionThickness={1.2}
-        sectionColor="#374151"
-        fadeDistance={350}
-        fadeStrength={1}
+        sectionThickness={1}
+        sectionColor="#52525b"
+        fadeDistance={500}
+        fadeStrength={1.2}
       />
 
       <SitePlanMesh siteplan={siteplan} />
@@ -57,6 +64,9 @@ export default function Scene({ siteplan }: Props) {
         maxDistance={800}
         maxPolarAngle={Math.PI / 2.1}
         target={[0, 0, 0]}
+        autoRotate={!interacted}
+        autoRotateSpeed={0.4}
+        enableDamping
       />
       <CameraRig siteplan={siteplan} />
     </Canvas>
@@ -74,7 +84,7 @@ function CameraRig({ siteplan }: { siteplan?: SitePlan | null }) {
 
   const targetPos = useMemo(() => {
     if (!plan || plan.lot.width <= 0 || plan.lot.depth <= 0) {
-      return new THREE.Vector3(80, 80, 80);
+      return new THREE.Vector3(120, 110, 140);
     }
     const span = Math.max(plan.lot.width, plan.lot.depth, 40);
     const d = span * 1.3;

@@ -9,10 +9,11 @@ type State = {
   running: boolean;
   prompt: string;
   setPrompt: (s: string) => void;
-  runMock: () => void;
+  runFromPrompt: (p: string) => void;
+  reset: () => void;
 };
 
-const STEP_INTERVAL_MS = 900;
+const STEP_INTERVAL_MS = 800;
 
 export const useStore = create<State>((set, get) => ({
   plan: null,
@@ -20,9 +21,10 @@ export const useStore = create<State>((set, get) => ({
   running: false,
   prompt: "",
   setPrompt: (s) => set({ prompt: s }),
-  runMock: () => {
+  reset: () => set({ plan: null, steps: [], running: false }),
+  runFromPrompt: (p) => {
     if (get().running) return;
-    set({ running: true, steps: [], plan: null });
+    set({ running: true, steps: [], plan: null, prompt: p });
 
     const stages: Array<{ step: Step; apply: (p: SitePlan | null) => SitePlan }> = [
       {

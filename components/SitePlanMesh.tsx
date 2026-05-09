@@ -4,6 +4,7 @@ import { useFrame } from "@react-three/fiber";
 import { Edges, Html, Line } from "@react-three/drei";
 import * as THREE from "three";
 import { useStore } from "@/lib/store";
+import { useAccent } from "@/lib/accent";
 import { STORY_HEIGHT_FT, type SitePlan } from "@/lib/types";
 
 const SCAFFOLD_BOX = { w: 30, d: 30, h: 24 };
@@ -15,21 +16,20 @@ const Y = {
 };
 
 const COLORS = {
-  ground: "#9ca3af",
-  lotFill: "#ecfccb",
-  lotEdge: "#4d7c0f",
-  setback: "#f97316",
-  building: "#3b82f6",
-  buildingEdge: "#1e3a8a",
+  lotFill: "#f5f5f4",
+  lotEdge: "#52525b",
+  building: "#1f1f23",
+  buildingEdge: "#27272a",
   buildingInvalid: "#ef4444",
-  stall: "#1f2937",
-  stallStripe: "#fbbf24",
+  stall: "#27272a",
+  stallStripe: "#52525b",
 };
 
 type Props = { siteplan?: SitePlan | null };
 
 export default function SitePlanMesh({ siteplan }: Props) {
   const storePlan = useStore((s) => s.plan);
+  const accent = useAccent((s) => s.accent.hex);
   const plan = siteplan !== undefined ? siteplan : storePlan;
 
   if (!plan || plan.lot.width <= 0 || plan.lot.depth <= 0) {
@@ -40,7 +40,7 @@ export default function SitePlanMesh({ siteplan }: Props) {
         receiveShadow
       >
         <boxGeometry args={[SCAFFOLD_BOX.w, SCAFFOLD_BOX.h, SCAFFOLD_BOX.d]} />
-        <meshStandardMaterial color="#22c55e" />
+        <meshStandardMaterial color={accent} roughness={0.5} />
       </mesh>
     );
   }
@@ -60,7 +60,7 @@ export default function SitePlanMesh({ siteplan }: Props) {
     <group position={[-lot.width / 2, 0, -lot.depth / 2]}>
       <Lot lot={lot} />
       {buildable ? (
-        <SetbackEnvelope lot={lot} setbacks={setbacks} />
+        <SetbackEnvelope lot={lot} setbacks={setbacks} color={accent} />
       ) : (
         <SetbackWarning lot={lot} />
       )}
@@ -70,6 +70,7 @@ export default function SitePlanMesh({ siteplan }: Props) {
           key={`${buildingShown.x}-${buildingShown.z}-${buildingShown.w}-${buildingShown.d}-${buildingShown.stories}`}
           building={buildingShown}
           valid={buildingValid}
+          accent={accent}
         />
       )}
 
@@ -101,13 +102,13 @@ function Lot({ lot }: { lot: SitePlan["lot"] }) {
         receiveShadow
       >
         <boxGeometry args={[lot.width, Y.lotTop, lot.depth]} />
-        <meshStandardMaterial color={COLORS.lotFill} />
+        <meshStandardMaterial color={COLORS.lotFill} roughness={0.95} />
         <Edges color={COLORS.lotEdge} lineWidth={1.5} />
       </mesh>
 
       <Html position={[0, 0.5, lot.depth + 4]} center distanceFactor={120}>
-        <div className="whitespace-nowrap rounded bg-white/90 px-2 py-1 text-[11px] font-medium text-zinc-800 shadow">
-          Lot · {lot.width}×{lot.depth} ft · {acres.toFixed(2)} acre
+        <div className="whitespace-nowrap rounded bg-paper px-2 py-1 font-mono text-[10px] uppercase tracking-wider text-ink shadow-md">
+          lot · {lot.width}×{lot.depth} ft · {acres.toFixed(2)} acre
         </div>
       </Html>
     </group>
@@ -117,9 +118,11 @@ function Lot({ lot }: { lot: SitePlan["lot"] }) {
 function SetbackEnvelope({
   lot,
   setbacks,
+  color,
 }: {
   lot: SitePlan["lot"];
   setbacks: SitePlan["setbacks"];
+  color: string;
 }) {
   const x0 = setbacks.side;
   const x1 = lot.width - setbacks.side;
@@ -135,7 +138,7 @@ function SetbackEnvelope({
   return (
     <Line
       points={points}
-      color={COLORS.setback}
+      color={color}
       lineWidth={2}
       dashed
       dashSize={2.5}
@@ -199,15 +202,18 @@ function useDrop<T extends THREE.Object3D>(
 function Building({
   building,
   valid,
+  accent,
 }: {
   building: NonNullable<SitePlan["building"]>;
   valid: boolean;
+  accent: string;
 }) {
   const height = building.stories * STORY_HEIGHT_FT;
   const cx = building.x + building.w / 2;
   const cz = building.z + building.d / 2;
   const restY = Y.lotTop + height / 2;
   const ref = useDrop<THREE.Group>(restY, 50);
+  const roofColor = valid ? accent : COLORS.buildingInvalid;
 
   return (
     <group ref={ref} position={[cx, restY + 50, cz]}>
@@ -215,14 +221,28 @@ function Building({
         <boxGeometry args={[building.w, height, building.d]} />
         <meshStandardMaterial
           color={valid ? COLORS.building : COLORS.buildingInvalid}
+          roughness={0.6}
         />
         <Edges color={COLORS.buildingEdge} lineWidth={1} />
       </mesh>
 
+      {/* Accent-colored roof plate, glows */}
+      <mesh position={[0, height / 2 + 0.4, 0]} castShadow>
+        <boxGeometry args={[building.w + 0.2, 0.6, building.d + 0.2]} />
+        <meshStandardMaterial
+          color={roofColor}
+          emissive={roofColor}
+          emissiveIntensity={0.4}
+          roughness={0.4}
+        />
+      </mesh>
+
       <Html position={[0, height / 2 + 6, 0]} center distanceFactor={120}>
-        <div className="whitespace-nowrap rounded bg-blue-600/95 px-2 py-1 text-[11px] font-semibold text-white shadow">
+        <div className="whitespace-nowrap rounded bg-paper px-2 py-1 font-mono text-[10px] uppercase tracking-wider text-ink shadow-md">
           {building.w}×{building.d} ft · {building.stories} stories
-          {!valid && <span className="ml-1 text-amber-200">· setback violation</span>}
+          {!valid && (
+            <span className="ml-1 text-red-600">· setback violation</span>
+          )}
         </div>
       </Html>
     </group>
@@ -241,7 +261,7 @@ function ParkingStall({ index, x, z }: { index: number; x: number; z: number }) 
       receiveShadow
     >
       <boxGeometry args={[9, stallThickness, 18]} />
-      <meshStandardMaterial color={COLORS.stall} />
+      <meshStandardMaterial color={COLORS.stall} roughness={0.9} />
       <Edges color={COLORS.stallStripe} lineWidth={1} />
     </mesh>
   );
@@ -267,8 +287,8 @@ function isBuildable(lot: SitePlan["lot"], s: SitePlan["setbacks"]) {
 function SetbackWarning({ lot }: { lot: SitePlan["lot"] }) {
   return (
     <Html position={[lot.width / 2, 1, lot.depth / 2]} center distanceFactor={120}>
-      <div className="whitespace-nowrap rounded bg-red-600/95 px-2 py-1 text-[11px] font-semibold text-white shadow">
-        ⚠ Setbacks exceed lot — no buildable area
+      <div className="whitespace-nowrap rounded bg-red-600 px-2 py-1 font-mono text-[10px] font-semibold uppercase tracking-wider text-white shadow-md">
+        ⚠ setbacks exceed lot — no buildable area
       </div>
     </Html>
   );
