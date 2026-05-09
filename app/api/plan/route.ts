@@ -7,6 +7,7 @@ import {
 } from "@google/genai";
 import { TOOLS } from "@/lib/tools";
 import { TOOL_DECLARATIONS, ALLOWED_TOOL_NAMES } from "@/lib/toolDeclarations";
+import { isInsideSetbacks } from "@/lib/geometry";
 import type { SitePlan, Step } from "@/lib/types";
 
 export const runtime = "nodejs";
@@ -157,6 +158,33 @@ export async function POST(req: Request) {
     const detail = err instanceof Error ? err.message : String(err);
     const isRateLimit = /429|RESOURCE_EXHAUSTED|quota/i.test(detail);
     const retryMatch = detail.match(/retry in ([\d.]+)s/i);
+
+    // If we already have a complete, valid plan and the failure was a rate
+    // limit on a late call (typically `finalize`), synthesize the finalize
+    // step so the user gets a usable result instead of a partial one.
+    const planComplete =
+      plan !== null &&
+      plan.building != null &&
+      isInsideSetbacks(plan.building, plan.lot, plan.setbacks);
+
+    if (isRateLimit && planComplete) {
+      const synthStep: Step = {
+        tool: "finalize",
+        note: "Plan validated. (Auto-finalized after Gemini rate limit.)",
+        ok: true,
+      };
+      steps.push(synthStep);
+      stages.push({ step: synthStep, plan });
+      return Response.json({
+        ok: true,
+        plan,
+        steps,
+        stages,
+        finalized: true,
+        iterations: iterations + 1,
+        warning: "Auto-finalized after Gemini rate limit.",
+      });
+    }
 
     return Response.json(
       {
