@@ -13,8 +13,13 @@ type StoredSession = {
   createdAt: string;
 };
 
-export default function PastPlans() {
-  const setPrompt = useStore((s) => s.setPrompt);
+type Props = {
+  onLoad?: (prompt: string) => void;
+};
+
+export default function PastPlans({ onLoad }: Props = {}) {
+  const setPromptInStore = useStore((s) => s.setPrompt);
+  const handleLoad = onLoad ?? setPromptInStore;
   const [history, setHistory] = useState<StoredSession[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -36,37 +41,47 @@ export default function PastPlans() {
   }, []);
 
   return (
-    <div className="space-y-1.5">
-      <div className="text-[10px] uppercase tracking-wider text-zinc-500">
-        Past plans
+    <div className="w-full max-w-2xl space-y-2">
+      <div className="text-[10px] uppercase tracking-[0.2em] text-mute/70 text-center font-mono">
+        past plans
       </div>
 
-      {error && <div className="text-xs text-red-400">{error}</div>}
+      {error && (
+        <div className="text-xs text-accent/80 font-mono text-center">
+          {error}
+        </div>
+      )}
 
       {!error && history === null && (
-        <div className="text-xs text-zinc-600 italic">Loading…</div>
+        <div className="text-xs text-mute/60 italic font-mono text-center">
+          loading…
+        </div>
       )}
 
       {!error && history?.length === 0 && (
-        <div className="text-xs text-zinc-600 italic">No past plans yet</div>
+        <div className="text-xs text-mute/60 italic font-mono text-center">
+          no past plans yet
+        </div>
       )}
 
-      {history?.map((s) => (
-        <div
-          key={s.id}
-          className="flex items-start gap-2 p-2 rounded bg-zinc-900/50 hover:bg-zinc-900 border border-zinc-800"
-        >
-          <p className="flex-1 text-xs text-zinc-300 line-clamp-2">
-            {s.prompt}
-          </p>
-          <button
-            onClick={() => setPrompt(s.prompt)}
-            className="shrink-0 text-[10px] uppercase tracking-wider text-emerald-400 hover:text-emerald-300 px-2 py-1 rounded border border-emerald-500/30 hover:border-emerald-400"
+      <div className="space-y-1.5">
+        {history?.map((s) => (
+          <div
+            key={s.id}
+            className="flex items-start gap-2 px-3 py-2 rounded border border-rule/60 bg-ink/40 backdrop-blur-md"
           >
-            Load
-          </button>
-        </div>
-      ))}
+            <p className="flex-1 font-mono text-xs sm:text-[13px] text-mute line-clamp-2">
+              {s.prompt}
+            </p>
+            <button
+              onClick={() => handleLoad(s.prompt)}
+              className="shrink-0 font-mono text-[10px] uppercase tracking-[0.2em] text-mute hover:text-accent transition-colors px-2 py-1"
+            >
+              load ↵
+            </button>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
