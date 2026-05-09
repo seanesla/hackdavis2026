@@ -225,6 +225,150 @@ function useFadeIn<T extends THREE.Object3D>(durationS = 0.4, delay = 0) {
   return ref;
 }
 
+// Per-story window panes on all four faces. Window count derived from face
+// length so a 30ft face gets fewer windows than a 100ft face — no awkward
+// stretching. Emissive uses the accent color so the building reads as "lit"
+// against the dark contour bg.
+function StoryWindows({
+  storyIndex,
+  w,
+  d,
+  accent,
+}: {
+  storyIndex: number;
+  w: number;
+  d: number;
+  accent: string;
+}) {
+  const winW = 2.2;
+  const winH = 4.5;
+  const spacing = 5.0;
+  const padding = 3.5;
+  const yCenter = storyIndex * STORY_HEIGHT_FT + STORY_HEIGHT_FT * 0.55;
+  const offset = 0.06;
+
+  const positionsAlong = (length: number): number[] => {
+    const usable = length - 2 * padding;
+    if (usable <= 0) return [];
+    const count = Math.max(1, Math.floor(usable / spacing) + 1);
+    const span = (count - 1) * spacing;
+    const start = -span / 2;
+    return Array.from({ length: count }, (_, i) => start + i * spacing);
+  };
+
+  const xs = positionsAlong(w);
+  const zs = positionsAlong(d);
+
+  const matProps = {
+    color: "#0a0a10",
+    emissive: accent,
+    emissiveIntensity: 0.5,
+    roughness: 0.18,
+    metalness: 0.35,
+  } as const;
+
+  return (
+    <group>
+      {/* North face (z = +d/2) */}
+      {xs.map((x, i) => (
+        <mesh key={`n-${i}`} position={[x, yCenter, d / 2 + offset]}>
+          <planeGeometry args={[winW, winH]} />
+          <meshStandardMaterial {...matProps} />
+        </mesh>
+      ))}
+      {/* South face (z = -d/2) */}
+      {xs.map((x, i) => (
+        <mesh
+          key={`s-${i}`}
+          position={[x, yCenter, -d / 2 - offset]}
+          rotation={[0, Math.PI, 0]}
+        >
+          <planeGeometry args={[winW, winH]} />
+          <meshStandardMaterial {...matProps} />
+        </mesh>
+      ))}
+      {/* East face (x = +w/2) */}
+      {zs.map((z, i) => (
+        <mesh
+          key={`e-${i}`}
+          position={[w / 2 + offset, yCenter, z]}
+          rotation={[0, Math.PI / 2, 0]}
+        >
+          <planeGeometry args={[winW, winH]} />
+          <meshStandardMaterial {...matProps} />
+        </mesh>
+      ))}
+      {/* West face (x = -w/2) */}
+      {zs.map((z, i) => (
+        <mesh
+          key={`w-${i}`}
+          position={[-w / 2 - offset, yCenter, z]}
+          rotation={[0, -Math.PI / 2, 0]}
+        >
+          <planeGeometry args={[winW, winH]} />
+          <meshStandardMaterial {...matProps} />
+        </mesh>
+      ))}
+    </group>
+  );
+}
+
+const CAR_PALETTE = [
+  "#3a4252", // slate
+  "#5a3a3a", // burgundy
+  "#3a4a3a", // forest
+  "#7a7a82", // silver
+  "#1f1f25", // graphite
+  "#86715a", // tan
+];
+
+// Deterministic hash so the same parking layout always renders the same cars.
+function stallHash(i: number): number {
+  return ((Math.sin(i * 12.9898 + 78.233) * 43758.5453) % 1 + 1) % 1;
+}
+
+function Car({ index }: { index: number }) {
+  const h1 = stallHash(index);
+  const h2 = stallHash(index + 17);
+  const color = CAR_PALETTE[Math.floor(h1 * CAR_PALETTE.length)];
+  // Stalls run with their long axis on Z. Car length aligns Z too. Random yaw
+  // (in / out facing) for variety.
+  const yaw = h2 > 0.5 ? 0 : Math.PI;
+  // Body slightly off-center within the stall, scaled to fit (stall = 9 × 18 ft).
+  return (
+    <group position={[0, 0.85, 0]} rotation={[0, yaw, 0]}>
+      {/* Lower body */}
+      <mesh castShadow receiveShadow>
+        <boxGeometry args={[5.6, 1.4, 13.5]} />
+        <meshStandardMaterial color={color} roughness={0.35} metalness={0.45} />
+      </mesh>
+      {/* Cabin / roof */}
+      <mesh castShadow position={[0, 1.0, -0.6]}>
+        <boxGeometry args={[5.0, 1.2, 7.5]} />
+        <meshStandardMaterial color="#0c0c12" roughness={0.15} metalness={0.6} />
+      </mesh>
+      {/* Windshield highlight — slight rake */}
+      <mesh position={[0, 1.0, 3.2]} rotation={[-0.45, 0, 0]} castShadow>
+        <planeGeometry args={[4.5, 1.3]} />
+        <meshStandardMaterial
+          color="#1a242e"
+          roughness={0.08}
+          metalness={0.85}
+        />
+      </mesh>
+      {/* Rear window */}
+      <mesh position={[0, 1.0, -4.4]} rotation={[0.45, Math.PI, 0]} castShadow>
+        <planeGeometry args={[4.5, 1.1]} />
+        <meshStandardMaterial
+          color="#1a242e"
+          roughness={0.08}
+          metalness={0.85}
+        />
+      </mesh>
+    </group>
+  );
+}
+
 function Building({
   building,
   valid,
@@ -268,6 +412,18 @@ function Building({
           </RoundedBox>
         );
       })}
+
+      {/* Windows — per story per face. Skipped for invalid (red) buildings. */}
+      {valid &&
+        Array.from({ length: building.stories }).map((_, i) => (
+          <StoryWindows
+            key={`win-${i}`}
+            storyIndex={i}
+            w={building.w}
+            d={building.d}
+            accent={accent}
+          />
+        ))}
 
       {/* Floor-line accent strip on top of each story (except the very top, which the roof covers) */}
       {Array.from({ length: Math.max(0, building.stories - 1) }).map((_, i) => {
@@ -316,6 +472,7 @@ function ParkingStall({ index, x, z }: { index: number; x: number; z: number }) 
   const stallThickness = 0.18;
   const yCenter = Y.stallTop - stallThickness / 2;
   const ref = useFadeIn<THREE.Group>(0.35, 0.5 + index * 0.04);
+  const occupied = stallHash(index + 99) > 0.4;
 
   return (
     <group ref={ref} position={[x + 4.5, yCenter, z + 9]}>
@@ -332,6 +489,7 @@ function ParkingStall({ index, x, z }: { index: number; x: number; z: number }) 
         <boxGeometry args={[0.25, 0.02, 16]} />
         <meshStandardMaterial color={COLORS.stallStripe} roughness={0.6} />
       </mesh>
+      {occupied && <Car index={index} />}
     </group>
   );
 }
