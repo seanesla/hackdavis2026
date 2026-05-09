@@ -1,3 +1,5 @@
+import { promises as fs } from "fs";
+import path from "path";
 import { BackboardClient } from "backboard-sdk";
 import type { SitePlan } from "./types";
 
@@ -27,6 +29,43 @@ function getClient(): BackboardClient | null {
 
 const mockStore: StoredSession[] = [];
 const threadIdByUser = new Map<string, string>();
+
+const THREADS_FILE = path.join(process.cwd(), ".backboard-threads.json");
+
+async function hydrateThreadFromDisk(userId: string): Promise<void> {
+  if (threadIdByUser.has(userId)) return;
+  try {
+    const raw = await fs.readFile(THREADS_FILE, "utf-8");
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      const threadId = (parsed as Record<string, unknown>)[userId];
+      if (typeof threadId === "string" && threadId) {
+        threadIdByUser.set(userId, threadId);
+      }
+    }
+  } catch {
+    // missing or unreadable file is expected on first run; ignore
+  }
+}
+
+async function persistThreadId(userId: string, threadId: string): Promise<void> {
+  try {
+    let obj: Record<string, string> = {};
+    try {
+      const raw = await fs.readFile(THREADS_FILE, "utf-8");
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        obj = parsed as Record<string, string>;
+      }
+    } catch {
+      // file may not exist yet; start fresh
+    }
+    obj[userId] = threadId;
+    await fs.writeFile(THREADS_FILE, JSON.stringify(obj, null, 2), "utf-8");
+  } catch (err) {
+    console.error("[backboard] persistThreadId failed", err);
+  }
+}
 
 function summarize(plan: SitePlan): string {
   const acres = ((plan.lot.width * plan.lot.depth) / 43560).toFixed(2);
@@ -87,6 +126,7 @@ export async function saveSession(
   }
 
   try {
+    await hydrateThreadFromDisk(userId);
     const existingThreadId = threadIdByUser.get(userId);
     const content = [
       `Save this site planning session for user ${userId}.`,
@@ -107,9 +147,11 @@ export async function saveSession(
       response &&
       typeof response === "object" &&
       "threadId" in response &&
-      response.threadId
+      response.threadId &&
+      typeof response.threadId === "string"
     ) {
       threadIdByUser.set(userId, response.threadId);
+      await persistThreadId(userId, response.threadId);
     }
   } catch (err) {
     console.error("[backboard] saveSession failed", err);
@@ -127,6 +169,7 @@ export async function getSessionHistory(
     return mockStore.filter((s) => s.userId === userId).slice(0, 5);
   }
 
+  await hydrateThreadFromDisk(userId);
   const threadId = threadIdByUser.get(userId);
   if (!threadId) return [];
 

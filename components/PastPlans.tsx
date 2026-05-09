@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useStore } from "@/lib/store";
 import type { SitePlan } from "@/lib/types";
 
@@ -23,22 +23,29 @@ export default function PastPlans({ onLoad }: Props = {}) {
   const [history, setHistory] = useState<StoredSession[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    let cancelled = false;
-    fetch(`/api/history?userId=${encodeURIComponent(USER_ID)}`)
-      .then((r) => r.json())
-      .then((data) => {
-        if (cancelled) return;
-        setHistory(data.history ?? []);
-      })
-      .catch((e) => {
-        if (cancelled) return;
-        setError(e instanceof Error ? e.message : "Failed to load history");
-      });
-    return () => {
-      cancelled = true;
-    };
+  const refetch = useCallback(async (): Promise<void> => {
+    try {
+      const r = await fetch(`/api/history?userId=${encodeURIComponent(USER_ID)}`);
+      const data = await r.json();
+      setHistory(data.history ?? []);
+      setError(null);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to load history");
+    }
   }, []);
+
+  useEffect(() => {
+    void refetch();
+    const onVisible = () => {
+      if (document.visibilityState === "visible") void refetch();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("focus", refetch);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("focus", refetch);
+    };
+  }, [refetch]);
 
   return (
     <div className="w-full max-w-2xl space-y-2">
