@@ -7,8 +7,8 @@ import { useStore } from "@/lib/store";
 import SideRail from "@/components/plan/SideRail";
 
 const Scene = dynamic(() => import("@/components/Scene"), { ssr: false });
-const ContourBackground = dynamic(
-  () => import("@/components/bg/ContourBackground"),
+const AccentGrainient = dynamic(
+  () => import("@/components/bg/AccentGrainient"),
   { ssr: false }
 );
 
@@ -25,7 +25,7 @@ function PlanInner() {
 
   return (
     <div className="relative flex h-screen w-screen overflow-hidden">
-      <ContourBackground />
+      <AccentGrainient />
       <SideRail />
       <motion.main
         initial={{ opacity: 0 }}

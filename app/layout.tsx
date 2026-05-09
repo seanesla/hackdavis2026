@@ -36,7 +36,7 @@ export default function RootLayout({
       suppressHydrationWarning
       className={`${geistSans.variable} ${geistMono.variable} ${bricolage.variable} h-full antialiased`}
     >
-      <body className="min-h-full flex flex-col font-sans grain bg-ink text-paper">
+      <body className="min-h-full flex flex-col font-sans grain text-paper">
         <AccentApplier />
         {children}
       </body>

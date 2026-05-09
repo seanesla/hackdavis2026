@@ -15,9 +15,12 @@
   --font-display: var(--font-bricolage);
 }
 
-html,
-body {
+html {
   background: var(--color-ink);
+  color: var(--color-paper);
+}
+body {
+  background: transparent;
   color: var(--color-paper);
 }
 
