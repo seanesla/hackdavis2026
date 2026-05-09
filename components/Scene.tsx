@@ -2,8 +2,11 @@
 import { Canvas } from "@react-three/fiber";
 import { Grid, OrbitControls } from "@react-three/drei";
 import SitePlanMesh from "./SitePlanMesh";
+import type { SitePlan } from "@/lib/types";
 
-export default function Scene() {
+type Props = { siteplan?: SitePlan | null };
+
+export default function Scene({ siteplan }: Props) {
   return (
     <Canvas shadows camera={{ position: [120, 120, 120], fov: 45 }}>
       <color attach="background" args={["#f3f4f6"]} />
@@ -43,7 +46,7 @@ export default function Scene() {
         fadeStrength={1}
       />
 
-      <SitePlanMesh />
+      <SitePlanMesh siteplan={siteplan} />
 
       <OrbitControls
         makeDefault

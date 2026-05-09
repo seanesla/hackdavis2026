@@ -1,7 +1,7 @@
 // SitePlan coordinates: origin = front-left corner of lot.
 // +x = right (lot width direction), +z = back (lot depth direction).
 // All values in feet. building.{x,z} = front-left corner of footprint.
-export const STORY_HEIGHT_FT = 12;
+export const STORY_HEIGHT_FT = 10;
 
 export type SitePlan = {
   lot: { width: number; depth: number };
