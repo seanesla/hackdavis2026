@@ -37,6 +37,6 @@ for (let i = 0; i < 12; i++) {
 export const mockPlan: SitePlan = {
   lot: LOT,
   setbacks: SETBACKS,
-  building: BUILDING,
+  buildings: [BUILDING],
   parking: stalls,
 };

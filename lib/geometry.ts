@@ -14,6 +14,13 @@ export function rectsOverlap(a: Rect, b: Rect): boolean {
   );
 }
 
+export function rectsOverlapAny(a: Rect, others: readonly Rect[]): boolean {
+  for (const o of others) {
+    if (rectsOverlap(a, o)) return true;
+  }
+  return false;
+}
+
 export function isInsideSetbacks(
   b: Rect,
   lot: SitePlan["lot"],

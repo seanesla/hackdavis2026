@@ -1,12 +1,7 @@
 "use client";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
-import {
-  ContactShadows,
-  Grid,
-  OrbitControls,
-  SoftShadows,
-} from "@react-three/drei";
+import { ContactShadows, Grid, OrbitControls } from "@react-three/drei";
 import * as THREE from "three";
 import SitePlanMesh from "./SitePlanMesh";
 import { useStore } from "@/lib/store";
@@ -22,17 +17,31 @@ export default function Scene({ siteplan }: Props) {
   return (
     <Canvas
       shadows
-      dpr={[1, 2]}
-      gl={{ alpha: true, antialias: true }}
-      camera={{ position: [120, 110, 140], fov: 38, near: 0.5, far: 2000 }}
+      dpr={[1, 1.5]}
+      gl={{
+        alpha: true,
+        antialias: true,
+        powerPreference: "high-performance",
+        // Logarithmic depth distribution — kills z-fighting on layered window
+        // trim/glass/mullion planes at long camera distances. At ~zero cost
+        // for our geometry budget. Pairs with a tighter near/far range
+        // (5/1500) to give the depth buffer enough precision to distinguish
+        // the fractional-foot offsets in window/door details.
+        logarithmicDepthBuffer: true,
+      }}
+      camera={{ position: [120, 110, 140], fov: 38, near: 5, far: 1500 }}
       onPointerDown={() => setInteracted(true)}
       onCreated={({ gl }) => {
         gl.toneMapping = THREE.ACESFilmicToneMapping;
         gl.toneMappingExposure = 1.05;
+        // Try to recover when WebGL context is lost (GPU memory pressure, tab switch, etc.)
+        const canvas = gl.domElement;
+        canvas.addEventListener("webglcontextlost", (e) => {
+          e.preventDefault();
+          console.warn("WebGL context lost — will attempt restore");
+        });
       }}
     >
-      <SoftShadows size={28} samples={10} focus={0.9} />
-
       {/* Hemisphere — sky tint above, inky bounce below. Matches contour bg. */}
       <hemisphereLight args={["#e6dec8", "#0b0b0c", 0.55]} />
 
@@ -42,7 +51,7 @@ export default function Scene({ siteplan }: Props) {
         intensity={1.35}
         color="#fff4dc"
         castShadow
-        shadow-mapSize={[2048, 2048]}
+        shadow-mapSize={[1024, 1024]}
         shadow-camera-left={-220}
         shadow-camera-right={220}
         shadow-camera-top={220}
@@ -68,7 +77,7 @@ export default function Scene({ siteplan }: Props) {
         scale={420}
         blur={2.6}
         far={120}
-        resolution={2048}
+        resolution={1024}
         color="#000000"
         frames={1}
       />
