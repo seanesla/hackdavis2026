@@ -12,6 +12,8 @@ type State = {
   runMock: () => void;
 };
 
+const STEP_INTERVAL_MS = 900;
+
 export const useStore = create<State>((set, get) => ({
   plan: null,
   steps: [],
@@ -21,13 +23,41 @@ export const useStore = create<State>((set, get) => ({
   runMock: () => {
     if (get().running) return;
     set({ running: true, steps: [], plan: null });
-    mockSteps.forEach((step, i) => {
+
+    const stages: Array<{ step: Step; apply: (p: SitePlan | null) => SitePlan }> = [
+      {
+        step: mockSteps[0],
+        apply: () => ({
+          lot: mockPlan.lot,
+          setbacks: mockPlan.setbacks,
+        }),
+      },
+      {
+        step: mockSteps[1],
+        apply: (p) => ({ ...(p as SitePlan), building: mockPlan.building }),
+      },
+      {
+        step: mockSteps[2],
+        apply: (p) => p as SitePlan,
+      },
+      {
+        step: mockSteps[3],
+        apply: (p) => ({ ...(p as SitePlan), parking: mockPlan.parking }),
+      },
+      {
+        step: mockSteps[4],
+        apply: (p) => p as SitePlan,
+      },
+    ];
+
+    stages.forEach((stage, i) => {
       setTimeout(() => {
-        set((s) => ({ steps: [...s.steps, step] }));
-        if (i === mockSteps.length - 1) {
-          set({ plan: mockPlan, running: false });
-        }
-      }, 600 * (i + 1));
+        set((s) => ({
+          steps: [...s.steps, stage.step],
+          plan: stage.apply(s.plan),
+        }));
+        if (i === stages.length - 1) set({ running: false });
+      }, STEP_INTERVAL_MS * (i + 1));
     });
   },
 }));

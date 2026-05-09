@@ -1,7 +1,10 @@
 "use client";
-import { Canvas } from "@react-three/fiber";
+import { useEffect, useMemo, useRef } from "react";
+import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import { Grid, OrbitControls } from "@react-three/drei";
+import * as THREE from "three";
 import SitePlanMesh from "./SitePlanMesh";
+import { useStore } from "@/lib/store";
 import type { SitePlan } from "@/lib/types";
 
 type Props = { siteplan?: SitePlan | null };
@@ -50,11 +53,50 @@ export default function Scene({ siteplan }: Props) {
 
       <OrbitControls
         makeDefault
-        minDistance={30}
-        maxDistance={400}
+        minDistance={20}
+        maxDistance={800}
         maxPolarAngle={Math.PI / 2.1}
         target={[0, 0, 0]}
       />
+      <CameraRig siteplan={siteplan} />
     </Canvas>
   );
+}
+
+function CameraRig({ siteplan }: { siteplan?: SitePlan | null }) {
+  const storePlan = useStore((s) => s.plan);
+  const plan = siteplan !== undefined ? siteplan : storePlan;
+
+  const camera = useThree((s) => s.camera);
+  const controls = useThree((s) => s.controls) as
+    | { target: THREE.Vector3; update: () => void }
+    | null;
+
+  const targetPos = useMemo(() => {
+    if (!plan || plan.lot.width <= 0 || plan.lot.depth <= 0) {
+      return new THREE.Vector3(80, 80, 80);
+    }
+    const span = Math.max(plan.lot.width, plan.lot.depth, 40);
+    const d = span * 1.3;
+    return new THREE.Vector3(d, d * 0.85, d);
+  }, [plan?.lot.width, plan?.lot.depth]);
+
+  const remaining = useRef(0);
+
+  useEffect(() => {
+    remaining.current = 1.2;
+  }, [targetPos]);
+
+  useFrame((_, dt) => {
+    if (remaining.current <= 0) return;
+    remaining.current -= dt;
+    const k = 1 - Math.exp(-dt * 4);
+    camera.position.lerp(targetPos, k);
+    if (controls?.target) {
+      controls.target.lerp(new THREE.Vector3(0, 0, 0), k);
+      controls.update();
+    }
+  });
+
+  return null;
 }

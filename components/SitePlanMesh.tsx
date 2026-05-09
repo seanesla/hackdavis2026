@@ -26,7 +26,7 @@ export default function SitePlanMesh({ siteplan }: Props) {
   const storePlan = useStore((s) => s.plan);
   const plan = siteplan !== undefined ? siteplan : storePlan;
 
-  if (!plan) {
+  if (!plan || plan.lot.width <= 0 || plan.lot.depth <= 0) {
     return (
       <mesh
         position={[0, SCAFFOLD_BOX.h / 2, 0]}
@@ -40,34 +40,60 @@ export default function SitePlanMesh({ siteplan }: Props) {
   }
 
   const { lot, setbacks, building, parking } = plan;
-  const buildingValid = building ? isInsideSetbacks(building, lot, setbacks) : true;
+  const buildable = isBuildable(lot, setbacks);
+  const buildingShown =
+    building && building.w > 0 && building.d > 0 && building.stories > 0
+      ? building
+      : null;
+  const buildingValid = buildingShown
+    ? isInsideSetbacks(buildingShown, lot, setbacks)
+    : true;
+  const stalls = parking ?? [];
 
   return (
     <group position={[-lot.width / 2, 0, -lot.depth / 2]}>
       <Lot lot={lot} />
-      <SetbackEnvelope lot={lot} setbacks={setbacks} />
+      {buildable ? (
+        <SetbackEnvelope lot={lot} setbacks={setbacks} />
+      ) : (
+        <SetbackWarning lot={lot} />
+      )}
 
-      {building && (
+      {buildingShown && (
         <Building
-          key={`${building.x}-${building.z}-${building.w}-${building.d}-${building.stories}`}
-          building={building}
+          key={`${buildingShown.x}-${buildingShown.z}-${buildingShown.w}-${buildingShown.d}-${buildingShown.stories}`}
+          building={buildingShown}
           valid={buildingValid}
         />
       )}
 
-      {parking?.map((p, i) => (
-        <ParkingStall key={`${p.x}-${p.z}`} index={i} x={p.x} z={p.z} />
+      {stalls.map((p, i) => (
+        <ParkingStall key={`${p.x}-${p.z}-${i}`} index={i} x={p.x} z={p.z} />
       ))}
     </group>
   );
 }
 
 function Lot({ lot }: { lot: SitePlan["lot"] }) {
+  const ref = useRef<THREE.Mesh>(null);
   const acres = (lot.width * lot.depth) / 43560;
-  const acresLabel = acres < 0.1 ? acres.toFixed(2) : acres.toFixed(2);
+
+  useFrame((_, dt) => {
+    const m = ref.current;
+    if (!m) return;
+    const k = 1 - Math.exp(-dt * 8);
+    m.scale.x = THREE.MathUtils.lerp(m.scale.x, 1, k);
+    m.scale.z = THREE.MathUtils.lerp(m.scale.z, 1, k);
+  });
+
   return (
     <group>
-      <mesh position={[lot.width / 2, 0.05, lot.depth / 2]} receiveShadow>
+      <mesh
+        ref={ref}
+        position={[lot.width / 2, 0.05, lot.depth / 2]}
+        scale={[0.001, 1, 0.001]}
+        receiveShadow
+      >
         <boxGeometry args={[lot.width, 0.1, lot.depth]} />
         <meshStandardMaterial color={COLORS.lotFill} />
         <Edges color={COLORS.lotEdge} lineWidth={1.5} />
@@ -75,7 +101,7 @@ function Lot({ lot }: { lot: SitePlan["lot"] }) {
 
       <Html position={[0, 0.5, lot.depth + 4]} center distanceFactor={120}>
         <div className="whitespace-nowrap rounded bg-white/90 px-2 py-1 text-[11px] font-medium text-zinc-800 shadow">
-          Lot · {lot.width}×{lot.depth} ft · {acresLabel} acre
+          Lot · {lot.width}×{lot.depth} ft · {acres.toFixed(2)} acre
         </div>
       </Html>
     </group>
@@ -115,6 +141,32 @@ function SetbackEnvelope({
   );
 }
 
+function useDrop(restY: number, dropHeight: number, delay = 0) {
+  const ref = useRef<THREE.Mesh>(null);
+  const yRef = useRef(restY + dropHeight);
+  const velRef = useRef(0);
+  const elapsed = useRef(0);
+
+  useFrame((_, dt) => {
+    const m = ref.current;
+    if (!m) return;
+    elapsed.current += dt;
+    if (elapsed.current < delay) {
+      m.position.y = restY + dropHeight;
+      return;
+    }
+    const stiffness = 65;
+    const damping = 9;
+    const force = (restY - yRef.current) * stiffness;
+    const dampForce = -velRef.current * damping;
+    velRef.current += (force + dampForce) * dt;
+    yRef.current += velRef.current * dt;
+    m.position.y = yRef.current;
+  });
+
+  return ref;
+}
+
 function Building({
   building,
   valid,
@@ -122,23 +174,17 @@ function Building({
   building: NonNullable<SitePlan["building"]>;
   valid: boolean;
 }) {
-  const ref = useRef<THREE.Mesh>(null);
   const height = building.stories * STORY_HEIGHT_FT;
   const cx = building.x + building.w / 2;
   const cz = building.z + building.d / 2;
-
-  useFrame((_, dt) => {
-    const m = ref.current;
-    if (!m) return;
-    m.scale.y = THREE.MathUtils.lerp(m.scale.y, 1, 1 - Math.exp(-dt * 6));
-  });
+  const restY = height / 2;
+  const ref = useDrop(restY, 80, 0);
 
   return (
     <group>
       <mesh
         ref={ref}
-        position={[cx, height / 2, cz]}
-        scale={[1, 0.001, 1]}
+        position={[cx, restY + 80, cz]}
         castShadow
         receiveShadow
       >
@@ -160,24 +206,13 @@ function Building({
 }
 
 function ParkingStall({ index, x, z }: { index: number; x: number; z: number }) {
-  const ref = useRef<THREE.Mesh>(null);
-  const elapsed = useRef(0);
-  const delay = index * 0.05;
-
-  useFrame((_, dt) => {
-    const m = ref.current;
-    if (!m) return;
-    elapsed.current += dt;
-    if (elapsed.current < delay) return;
-    m.scale.x = THREE.MathUtils.lerp(m.scale.x, 1, 1 - Math.exp(-dt * 10));
-    m.scale.z = THREE.MathUtils.lerp(m.scale.z, 1, 1 - Math.exp(-dt * 10));
-  });
+  const restY = 0.13;
+  const ref = useDrop(restY, 35, index * 0.06);
 
   return (
     <mesh
       ref={ref}
-      position={[x + 4.5, 0.13, z + 9]}
-      scale={[0.001, 1, 0.001]}
+      position={[x + 4.5, restY + 35, z + 9]}
       receiveShadow
     >
       <boxGeometry args={[9, 0.1, 18]} />
@@ -197,5 +232,19 @@ function isInsideSetbacks(
     b.z >= s.front &&
     b.x + b.w <= lot.width - s.side &&
     b.z + b.d <= lot.depth - s.back
+  );
+}
+
+function isBuildable(lot: SitePlan["lot"], s: SitePlan["setbacks"]) {
+  return lot.width - 2 * s.side > 0 && lot.depth - s.front - s.back > 0;
+}
+
+function SetbackWarning({ lot }: { lot: SitePlan["lot"] }) {
+  return (
+    <Html position={[lot.width / 2, 1, lot.depth / 2]} center distanceFactor={120}>
+      <div className="whitespace-nowrap rounded bg-red-600/95 px-2 py-1 text-[11px] font-semibold text-white shadow">
+        ⚠ Setbacks exceed lot — no buildable area
+      </div>
+    </Html>
   );
 }
