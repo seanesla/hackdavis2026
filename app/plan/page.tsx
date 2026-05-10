@@ -8,6 +8,9 @@ import SideRail from "@/components/plan/SideRail";
 import SceneTools from "@/components/plan/SceneTools";
 import DebugToggle from "@/components/plan/DebugToggle";
 import TransparencyPill from "@/components/plan/TransparencyPill";
+import NorthArrow from "@/components/plan/NorthArrow";
+import ScaleBar from "@/components/plan/ScaleBar";
+import TitleBlock from "@/components/plan/TitleBlock";
 
 const Scene = dynamic(() => import("@/components/Scene"), { ssr: false });
 const AccentGrainient = dynamic(
@@ -98,6 +101,11 @@ function PlanInner() {
       >
         {showSceneUi && <Scene />}
         {showSceneUi && <DebugToggle />}
+        <Scene />
+        <DebugToggle />
+        <NorthArrow />
+        <ScaleBar />
+        <TitleBlock />
         {modeParam === "interview" && <InterviewFlow />}
         {modeParam === "freestyle" && <FreestyleFlow />}
         {voiceModifyOpen && (

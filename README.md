@@ -14,7 +14,7 @@ front end, agent backend, voice modes, image-based floor plans, 3D interiors, an
 - text mode: type a prompt → `/api/plan` runs a Gemini 3 Flash function-calling loop → 3D site plan animates in step-by-step
 - voice modes (chrome/edge only): "interview" asks 5 questions and synthesizes a prompt; "freestyle" is an open chat with `/api/chat` until the user says "build it"
 - 3D scene (R3F + drei): boxes per building (with a merge rule for letter-shape buildings sharing material + stories + an edge), trees / bushes / fences / walkways / parking / street furniture from the SitePlan, GLB props for cars and street furniture in `public/models/`
-- click a floor → `FloorPanel` shows a generated floor-plan image (from `/api/floorplan`, gemini-2.5-flash-image) plus a 3D interior with furniture (from `/api/interior`, structured output)
+- click a floor → the building reveals a 3D interior in place (colored room floors, auto-derived walls, GLB furniture), populated from `/api/interior` (structured output). a separate `/api/floorplan` endpoint generates a top-down image (gemini-2.5-flash-image); the route + store fetch logic exist but no current UI component renders the image.
 - cross-session memory via Backboard: every finalized plan is saved to a thread, design preferences are pulled back into future prompts, and `ChatHistoryBox` lets the user ask questions about their past plans through `/api/chat-history`
 - past plans stored locally in IndexedDB (max 5) and surfaced on the landing page; export / import a plan as JSON
 - ElevenLabs TTS proxy at `/api/tts` so the AI's voice replies sound like a person, not the system speech synthesizer
@@ -53,8 +53,9 @@ front end, agent backend, voice modes, image-based floor plans, 3D interiors, an
 | `POST /api/save-memory` | Saves a finalized plan (or a note update) to a Backboard thread | `backboard-sdk` |
 | `POST /api/chat-history` | Lets the user ask questions about their past plans | `backboard-sdk` |
 | `POST /api/tts` | Streams ElevenLabs audio back to the browser | ElevenLabs REST |
+| `POST /api/mint-plan` | Mints a Metaplex Core NFT on Solana devnet from the captured canvas + plan JSON; uploads to Arweave via Irys | `@metaplex-foundation/mpl-core`, `umi-uploader-irys` |
 
-every route uses an in-process rate limiter from `lib/rateLimit.ts`.
+every route uses an in-process rate limiter from `lib/rateLimit.ts` (the `mint-plan` bucket is capped at 2 / minute / IP).
 
 ## agent tools (in `lib/toolDeclarations.ts` / `lib/tools.ts`)
 
@@ -83,9 +84,9 @@ app/
     plan/             POST — main agent loop
     save-memory/      POST — persist a plan to Backboard
     tts/              POST — ElevenLabs proxy
-  layout.tsx          root layout — mounts AccentApplier + LoadingCurtain + FloatingHammer
+  layout.tsx          root layout — mounts AccentApplier + LoadingCurtain
   page.tsx            landing (Hero, PromptBar, ExamplePills, voice mode buttons)
-  plan/page.tsx       plan view — Scene + SideRail + DebugToggle + (InterviewFlow | FreestyleFlow)
+  plan/page.tsx       plan view — Scene + SideRail + SceneTools + TransparencyPill + DebugToggle + (InterviewFlow | FreestyleFlow)
   globals.css         tailwind v4 theme tokens
   icon.png            favicon
 components/
@@ -101,11 +102,12 @@ components/
   hammer/             FloatingHammer + Hammer3D (GLB mascot) + HammerFire
   landing/            Hero, PromptBar, ExamplePills, PromptDropdown
   models/GltfModel.tsx  generic GLB loader with auto-scale + fallback
-  plan/               SideRail, Step, DebugToggle, FloorPanel, CompartmentFire
+  plan/               SideRail, Step, DebugToggle, SceneTools, TransparencyPill, AuditPill, MintNftButton, CompartmentFire
   voice/              InterviewFlow, FreestyleFlow, MuteToggle
 lib/
   accent.ts           accent state
   agent.ts            client-side wrapper around /api/chat (with canned fallback)
+  audit.ts            in-memory site-plan audit (pass / warn / fail / info checks + fixPrompt strings)
   backboard.ts        Backboard SDK helpers (saveSession, getPreferences, chatWithHistory)
   debugStore.ts       debug overlay toggles
   exportPlan.ts       JSON download / import for a plan
@@ -115,14 +117,18 @@ lib/
   mockPlan.ts         hand-written plan + step trail for offline dev
   modelConfig.ts      per-model rotateY / scaleBoost overrides
   pastPlansDb.ts      IndexedDB CRUD for past plans (max 5)
+  perfLog.ts          debug-mode-only performance logger (no-op unless debug overlay is on)
+  phantom.ts          typed Phantom provider (read public key, never signs)
   placementZones.ts   deterministic zones for street furniture
   rateLimit.ts        in-process per-IP per-bucket limiter
+  sceneControls.ts    module-level bridge between R3F canvas (camera + OrbitControls) and outside-canvas UI
+  solana.ts           singleton Umi (devnet RPC + mpl-core + Irys uploader) keyed off SOLANA_SECRET_KEY
   speech.ts           Web Speech API wrapper (recognition + synthesis)
   store.ts            zustand store, runFromPrompt, voice flow state
   toolDeclarations.ts function-call schemas the model sees
   tools.ts            pure tool functions — never throw, return { plan, result, ok }
+  transparency.ts     "you asked for X, AI filled in Y" receipt that diffs the brief against the SitePlan
   types.ts            SitePlan + Step + enums — single source of truth
-  useDataUrlTexture.ts  R3F texture hook for floor-plan dataURLs
   userIdentity.ts     localStorage-backed userId + Backboard threadId
 public/
   models/             hammer.glb + GLB props for trees, cars, benches, etc.

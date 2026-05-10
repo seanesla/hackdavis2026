@@ -62,10 +62,10 @@ export default function ConversationScreen({
           on the rest of the page — only the card itself is interactive. */}
       <div className="absolute inset-0 bg-ink/55 backdrop-blur-sm pointer-events-none" />
 
-      <div className="relative h-full flex flex-col items-center justify-center px-6 py-10 gap-5">
-        {/* The main "screen" — minimal: thin hairline border, soft glow, no
-            section borders inside. Sections separate with whitespace. */}
-        <div className="pointer-events-auto w-full max-w-3xl rounded-2xl bg-ink/70 backdrop-blur-2xl border border-paper/10 text-accent shadow-[0_8px_40px_-12px_rgba(0,0,0,0.6),0_0_50px_-15px_currentColor] flex flex-col h-[72vh] max-h-[640px] overflow-hidden">
+      <div className="relative h-full flex flex-col items-center justify-center px-6 py-10">
+        {/* The main "screen" — visible window that contains EVERYTHING:
+            chat, live footer, controls, and hint. One card, clearly bounded. */}
+        <div className="pointer-events-auto w-full max-w-3xl rounded-2xl bg-ink/90 backdrop-blur-2xl border border-paper/25 text-accent shadow-[0_20px_60px_-12px_rgba(0,0,0,0.75),0_0_80px_-20px_currentColor] flex flex-col h-[78vh] max-h-[720px] overflow-hidden">
           {/* Top status bar */}
           <div className="flex items-center justify-between px-5 pt-4 pb-3 shrink-0">
             <div className="flex items-center gap-2">
@@ -122,7 +122,7 @@ export default function ConversationScreen({
           </div>
 
           {/* Live status footer — single hairline above for separation */}
-          <div className="px-5 pt-3 pb-4 shrink-0 min-h-[3.5rem] flex flex-col gap-1 border-t border-paper/5">
+          <div className="px-5 pt-3 pb-3 shrink-0 min-h-[3.5rem] flex flex-col gap-1 border-t border-paper/10">
             <div className="flex items-center gap-2.5">
               <span
                 className={`h-1.5 w-1.5 rounded-full shrink-0 ${
@@ -148,16 +148,18 @@ export default function ConversationScreen({
               </div>
             )}
           </div>
-        </div>
 
-        {/* Controls outside the screen */}
-        <div className="pointer-events-auto flex items-center gap-8">{controls}</div>
-
-        {hint && (
-          <div className="pointer-events-auto font-mono text-[10px] uppercase tracking-[0.2em] text-paper/40">
-            {hint}
+          {/* Controls — now INSIDE the card, separated by a hairline */}
+          <div className="px-5 py-4 shrink-0 flex items-center justify-center gap-8 border-t border-paper/10 bg-ink/40">
+            {controls}
           </div>
-        )}
+
+          {hint && (
+            <div className="px-5 pb-3 shrink-0 text-center font-mono text-[10px] uppercase tracking-[0.2em] text-paper/40">
+              {hint}
+            </div>
+          )}
+        </div>
       </div>
     </motion.div>
   );
