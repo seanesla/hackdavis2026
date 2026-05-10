@@ -6,9 +6,12 @@ import { useStore } from "@/lib/store";
 export default function LoadingCurtain() {
   const loading = useStore((s) => s.loading);
   const running = useStore((s) => s.running);
+  const plan = useStore((s) => s.plan);
   const pathname = usePathname();
   const onPlan = pathname?.startsWith("/plan") ?? false;
-  const active = onPlan ? loading || running : loading;
+  // On /plan, hide once the first stage lands and buildings start animating —
+  // the centered overlay would otherwise cover the construction.
+  const active = onPlan ? (loading || running) && plan === null : loading;
 
   return (
     <AnimatePresence>
