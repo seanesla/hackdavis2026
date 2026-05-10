@@ -2,10 +2,16 @@
 // Keeps the API key out of the browser bundle.
 // Returns 503 when no key is configured so the client can fall back gracefully.
 
+import { rateLimit, rateLimitResponse } from "@/lib/rateLimit";
+
 const DEFAULT_VOICE_ID = "21m00Tcm4TlvDq8ikWAM"; // Rachel
 const MAX_TEXT_LEN = 1000;
 
 export async function POST(req: Request) {
+  // ElevenLabs bills per character — keep this tight to prevent runaway cost.
+  const limited = rateLimit(req, { bucket: "tts", limit: 10, windowMs: 60_000 });
+  if (!limited.ok) return rateLimitResponse(limited);
+
   const apiKey = process.env.ELEVENLABS_API_KEY;
   if (!apiKey) {
     return new Response("ELEVENLABS_API_KEY not configured", { status: 503 });

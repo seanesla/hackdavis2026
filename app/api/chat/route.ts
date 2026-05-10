@@ -1,6 +1,8 @@
 // Server-side proxy for free-form Gemini chat.
 // Returns 503 when no key is configured so the client falls back to canned.
 
+import { rateLimit, rateLimitResponse } from "@/lib/rateLimit";
+
 const MODEL = "gemini-3-flash-preview";
 const MODEL_FALLBACK = "gemini-2.5-flash";
 
@@ -38,6 +40,9 @@ async function callGemini(model: string, apiKey: string, contents: ReturnType<ty
 }
 
 export async function POST(req: Request) {
+  const limited = rateLimit(req, { bucket: "chat", limit: 20, windowMs: 60_000 });
+  if (!limited.ok) return rateLimitResponse(limited);
+
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
     return new Response("GEMINI_API_KEY not configured", { status: 503 });
