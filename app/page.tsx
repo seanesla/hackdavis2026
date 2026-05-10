@@ -84,34 +84,6 @@ export default function Home() {
     }, 650);
   };
 
-  // Click anywhere on the page → focus the prompt input, unless the click
-  // landed on something that handles its own click (button/link/input/etc).
-  // Document-level + capture so it catches clicks regardless of React event
-  // bubbling through canvases, framer-motion wrappers, or stopPropagation.
-  useEffect(() => {
-    // Use mousedown (not click) so we can read document.activeElement BEFORE
-    // the browser changes focus. By click time the input has already blurred,
-    // and we'd refocus it — which re-opens the past-plans dropdown forever.
-    const onMouseDown = (e: MouseEvent) => {
-      const target = e.target as HTMLElement | null;
-      if (!target) return;
-      // If the input is currently focused, the user is blurring on purpose.
-      if (document.activeElement === promptInputRef.current) return;
-      if (
-        target.closest(
-          "button, a, input, textarea, select, label, [role='radio'], [role='button']",
-        )
-      ) {
-        return;
-      }
-      // Defer focus so we don't fight the browser's own focus handling for
-      // the click target.
-      requestAnimationFrame(() => promptInputRef.current?.focus());
-    };
-    document.addEventListener("mousedown", onMouseDown, true);
-    return () => document.removeEventListener("mousedown", onMouseDown, true);
-  }, []);
-
   // Plays the build animation with a hard-coded mock plan — no API call.
   // Lets you trigger the hammer chop + buildings dropping in for testing.
   const playDemo = () => {

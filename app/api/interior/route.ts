@@ -17,6 +17,9 @@ import { rateLimit, rateLimitResponse } from "@/lib/rateLimit";
 export const runtime = "nodejs";
 export const maxDuration = 30;
 
+const MODEL = "gemini-3.1-flash-lite";
+const MODEL_FALLBACK = "gemini-2.5-flash";
+
 type CacheEntry = { plan: InteriorPlan; createdAt: number };
 const CACHE = new Map<string, CacheEntry>();
 const CACHE_LIMIT = 200;
@@ -244,52 +247,64 @@ export async function POST(req: Request) {
 
   const ai = new GoogleGenAI({ apiKey });
 
-  try {
-    const response = await ai.models.generateContent({
-      model: "gemini-3.1-flash-lite",
-      contents: [{ role: "user", parts: [{ text: prompt }] }],
-      config: {
-        responseMimeType: "application/json",
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            rooms: {
-              type: Type.ARRAY,
-              items: {
-                type: Type.OBJECT,
-                properties: {
-                  name: { type: Type.STRING },
-                  x: { type: Type.NUMBER },
-                  z: { type: Type.NUMBER },
-                  w: { type: Type.NUMBER },
-                  d: { type: Type.NUMBER },
-                  floor: {
-                    type: Type.STRING,
-                    enum: [...FLOOR_TYPES],
-                  },
+  const generationConfig = {
+    contents: [{ role: "user", parts: [{ text: prompt }] }],
+    config: {
+      responseMimeType: "application/json",
+      responseSchema: {
+        type: Type.OBJECT,
+        properties: {
+          rooms: {
+            type: Type.ARRAY,
+            items: {
+              type: Type.OBJECT,
+              properties: {
+                name: { type: Type.STRING },
+                x: { type: Type.NUMBER },
+                z: { type: Type.NUMBER },
+                w: { type: Type.NUMBER },
+                d: { type: Type.NUMBER },
+                floor: {
+                  type: Type.STRING,
+                  enum: [...FLOOR_TYPES],
                 },
-                required: ["name", "x", "z", "w", "d", "floor"],
               },
-            },
-            furniture: {
-              type: Type.ARRAY,
-              items: {
-                type: Type.OBJECT,
-                properties: {
-                  kind: { type: Type.STRING, enum: [...FURNITURE_KINDS] },
-                  x: { type: Type.NUMBER },
-                  z: { type: Type.NUMBER },
-                  yaw: { type: Type.NUMBER },
-                },
-                required: ["kind", "x", "z"],
-              },
+              required: ["name", "x", "z", "w", "d", "floor"],
             },
           },
-          required: ["rooms", "furniture"],
+          furniture: {
+            type: Type.ARRAY,
+            items: {
+              type: Type.OBJECT,
+              properties: {
+                kind: { type: Type.STRING, enum: [...FURNITURE_KINDS] },
+                x: { type: Type.NUMBER },
+                z: { type: Type.NUMBER },
+                yaw: { type: Type.NUMBER },
+              },
+              required: ["kind", "x", "z"],
+            },
+          },
         },
-        thinkingConfig: { thinkingLevel: ThinkingLevel.MEDIUM },
+        required: ["rooms", "furniture"],
       },
-    });
+      thinkingConfig: { thinkingLevel: ThinkingLevel.MEDIUM },
+    },
+  };
+
+  try {
+    let response;
+    try {
+      response = await ai.models.generateContent({ model: MODEL, ...generationConfig });
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      // Preview model not available on this key — retry on the stable one.
+      if (/404|NOT_FOUND|not found|is not supported/i.test(detail)) {
+        response = await ai.models.generateContent({ model: MODEL_FALLBACK, ...generationConfig });
+      } else {
+        throw err;
+      }
+    }
 
     const text =
       response.text ??

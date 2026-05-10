@@ -1,7 +1,17 @@
 "use client";
 import { AnimatePresence, motion } from "framer-motion";
 import { usePathname } from "next/navigation";
+import dynamic from "next/dynamic";
 import { useStore } from "@/lib/store";
+
+// Hammer overlay for the planning state. Renders as a body-level fixed
+// element over the 3D scene so the user sees the hammer prepping the plan,
+// then it fades out and the panel-resident hammer (in SideRail) takes over
+// once the plan exists.
+const Hammer3D = dynamic(() => import("@/components/hammer/Hammer3D"), {
+  ssr: false,
+  loading: () => null,
+});
 
 export default function LoadingCurtain() {
   const loading = useStore((s) => s.loading);
@@ -24,19 +34,29 @@ export default function LoadingCurtain() {
       {active && (
         <motion.div
           key="curtain"
-          className="fixed inset-0 z-[80] pointer-events-none"
+          className="fixed inset-0 z-[80] pointer-events-none flex flex-col items-center justify-center"
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
           transition={{ duration: 0.5 }}
         >
+          {/* Hammer + caption render as a single column centered on the
+              viewport, so the hammer sits directly above the text and the
+              two read as one anchored unit. Sized to match the SideRail
+              slot (400×260) so the visual weight stays consistent across
+              the hand-off when planning completes. */}
           <motion.div
-            // Centered at the full viewport so it sits directly under the
-            // floating hammer (which also centers at vw/2). The SideRail is
-            // a glass overlay on the renderer, so viewport-centered reads
-            // as "centered in the scene" without snapping right whenever
-            // /plan is the active route.
-            className="absolute left-1/2 -translate-x-1/2 top-[calc(50%+100px)] font-mono text-[11px] uppercase tracking-[0.3em] text-mute"
+            className="w-[400px] h-[260px]"
+            initial={{ opacity: 0, scale: 0.85, y: -20 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            exit={{ opacity: 0, scale: 0.9, y: -10 }}
+            transition={{ duration: 0.5, ease: [0.22, 1, 0.36, 1] }}
+          >
+            <Hammer3D isLoading forging={false} subtle={false} />
+          </motion.div>
+
+          <motion.div
+            className="mt-2 font-mono text-[11px] uppercase tracking-[0.3em] text-mute"
             animate={{ opacity: [0.4, 1, 0.4] }}
             transition={{
               duration: 1.6,
