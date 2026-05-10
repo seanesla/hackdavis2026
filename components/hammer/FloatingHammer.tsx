@@ -94,6 +94,20 @@ export default function FloatingHammer() {
     return "hidden";
   }, [waiting, pathname]);
 
+  // Don't start the hammer chop until the floating hammer has finished its
+  // 750ms fly-to-sidebar animation. Otherwise it strikes mid-flight, which
+  // looks weird and reads as "sideways" because it's hammering while the
+  // div is still translating across the screen.
+  const [settled, setSettled] = useState(false);
+  useEffect(() => {
+    if (slot !== "sidebar") {
+      setSettled(false);
+      return;
+    }
+    const timer = setTimeout(() => setSettled(true), 800);
+    return () => clearTimeout(timer);
+  }, [slot]);
+
   const { centerX, centerY } = useMemo(
     () => ({
       centerX: (vw - slotRect.w * CENTER_SCALE) / 2,
@@ -155,7 +169,7 @@ export default function FloatingHammer() {
     >
       <Hammer3D
         isLoading={waiting}
-        forging={forging}
+        forging={forging && settled}
         subtle={slot === "sidebar"}
         interactive={slot === "sidebar"}
       />

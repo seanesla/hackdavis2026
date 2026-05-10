@@ -13,6 +13,7 @@ import { useAccent } from "@/lib/accent";
 
 const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
 const easeOutCubic = (t: number) => 1 - Math.pow(1 - t, 3);
+const easeInCubic = (t: number) => t * t * t;
 const clamp01 = (t: number) => Math.max(0, Math.min(1, t));
 
 // Soft glow halo: stacked inverted hulls. Each hull pushes verts outward
@@ -178,29 +179,46 @@ function Hammer({ isLoading, forging, interactive, subtle, lightRef }: HammerPro
     }
 
     if (strike.current) {
+      // The inner reorient was removed so the GLB sits with its handle along
+      // world +Y (head at top, claw at bottom — the GLB's natural pose).
+      // Rotating strike around its X axis swings the head through the YZ
+      // plane: up → forward → down. That's a real hammer slam — no sideways
+      // arc, no barrel-roll, head goes from top of screen toward the camera
+      // and continues to bottom of screen.
       let targetX = 0;
 
       if (forging && !reduced.current) {
-        // Continuous hammering at ~1.6 strikes/sec. Sharp down-stroke,
-        // softer recovery — reads as forging, not a sine wave.
-        const cycle = (t * 1.6) % 1;
-        const struck = 0.95;
-        const raised = 0.15;
-        if (cycle < 0.35) {
-          targetX = lerp(raised, struck, easeOutCubic(cycle / 0.35));
+        // Continuous hammering at ~0.8 strikes/sec (1250ms / cycle), with
+        // explicit hold phases so it reads as "wind up → slam → recoil →
+        // recover" instead of a frantic blur.
+        //   raised = 0   → head straight up (rest / cocked).
+        //   struck = π   → head straight down (slammed).
+        //   0–20%   hold at raised (anticipation pause)
+        //   20–35%  slam down with easeIn (accelerating into impact)
+        //   35–45%  hold at struck (impact / recoil)
+        //   45–100% recover up with easeOut (decelerating to top)
+        const cycle = (t * 0.8) % 1;
+        const raised = 0;
+        const struck = Math.PI;
+        if (cycle < 0.20) {
+          targetX = raised;
+        } else if (cycle < 0.35) {
+          targetX = lerp(raised, struck, easeInCubic((cycle - 0.20) / 0.15));
+        } else if (cycle < 0.45) {
+          targetX = struck;
         } else {
-          targetX = lerp(struck, raised, easeOutCubic((cycle - 0.35) / 0.65));
-        }
-      } else if (submitting && submitElapsed >= 0 && !reduced.current) {
-        if (submitElapsed < 0.25) {
-          targetX = lerp(0, 1.0, easeOutCubic(submitElapsed / 0.25));
-        } else if (submitElapsed < 0.35) {
-          targetX = lerp(1.0, 0.85, (submitElapsed - 0.25) / 0.1);
-        } else {
-          targetX = 0.6;
+          targetX = lerp(struck, raised, easeOutCubic((cycle - 0.45) / 0.55));
         }
       }
+      // No submit/draft tilt animation. The hammer stays at the rest pose
+      // (head straight up) during loading, navigation, and the fly into
+      // the sidebar. Forward tilt only happens once forging starts (which
+      // FloatingHammer gates by `settled` — i.e., once the fly animation
+      // is fully complete), so nothing reads as "hitting" before then.
 
+      // Clear the leftover Z rotation from the previous fix so it doesn't
+      // hold the hammer at a tilted rest pose.
+      strike.current.rotation.z = 0;
       const k = forging ? 0.32 : 0.18;
       strike.current.rotation.x = lerp(strike.current.rotation.x, targetX, k);
     }
@@ -212,7 +230,11 @@ function Hammer({ isLoading, forging, interactive, subtle, lightRef }: HammerPro
       targetSpin = lerp(baseSpin, peakSpin, easeOutCubic(ramp));
     }
     spinVel.current = lerp(spinVel.current, targetSpin, 0.1);
-    if (spinner.current && !reduced.current && !forging) {
+    if (spinner.current && !reduced.current) {
+      // Always accumulate the slow idle spin, even during forging — strike
+      // pivots around X (perpendicular to the handle) so the spinner's Y
+      // rotation doesn't fight it. The hammer keeps gently rotating around
+      // its own handle while it's hammering.
       spinner.current.rotation.y += spinVel.current * dt60;
     }
 
@@ -261,13 +283,16 @@ function Hammer({ isLoading, forging, interactive, subtle, lightRef }: HammerPro
   return (
     <group ref={lift} {...pointerHandlers}>
       <group ref={drift}>
-        <group ref={strike}>
-          <group ref={spinner} scale={scale}>
+        <group ref={spinner} scale={scale}>
+          <group ref={strike}>
+            {/* The GLB ships with the handle along world X with the head at
+                its -X end. Rotating -π/2 around Z lifts the head to +Y, so
+                the hammer stands up at rest with the head at the top.
+                Strike then rotates around X, swinging the head through the
+                YZ plane — a clean forward chop, no sideways arc. drei's
+                <Center> centers the bbox on origin so the pivot is the
+                hammer's geometric center. */}
             <group rotation={[0, 0, -Math.PI / 2]}>
-              {/* drei's <Center> traverses the scene at mount and shifts an
-                  inner group so the precise bbox is centered on origin. This
-                  is robust to whatever odd offsets the GLB ships with and
-                  any extra meshes (like the outline hulls) we attach. */}
               <Center precise>
                 <primitive object={centeredScene} />
               </Center>

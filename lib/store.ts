@@ -13,6 +13,7 @@ import {
   type Room,
   interiorCacheKey,
 } from "./furniture";
+import { mockPlan, mockSteps } from "./mockPlan";
 import { getPlans, savePlan } from "./pastPlansDb";
 import { getUserId, getThreadId, setThreadId } from "./userIdentity";
 
@@ -87,6 +88,7 @@ type State = {
   setLoading: (b: boolean) => void;
   runFromPrompt: (p: string) => Promise<void>;
   runFromInterview: (answers: InterviewAnswers) => Promise<void>;
+  replayMockPlan: () => void;
   loadImportedPlan: (data: { plan: SitePlan; steps?: Step[]; prompt?: string }) => void;
   reset: () => void;
   selectFloor: (sel: FloorSelection | null) => void;
@@ -294,6 +296,48 @@ export const useStore = create<State>((set, get) => {
     });
   };
 
+  // Drives the same stage-replay pipeline as runFromPrompt, but seeded with
+  // mockPlan/mockSteps so the build animation (and hammer chop) plays without
+  // hitting the Gemini API. Useful for testing the visuals or demoing offline.
+  const replayMockPlan = (): void => {
+    if (get().running) return;
+    const myRunId = ++runId;
+
+    set({
+      running: true,
+      loading: false,
+      steps: [],
+      plan: null,
+      error: null,
+      prompt: "demo: 0.5 acre lot, 3-story building, 12 parking",
+      selectedFloor: null,
+      floorPlans: {},
+      interiors: {},
+    });
+
+    const { lot, setbacks, buildings, parking } = mockPlan;
+    const stages: Array<{ step: Step; plan: SitePlan }> = [
+      { step: mockSteps[0], plan: { lot, setbacks } },
+      { step: mockSteps[1], plan: { lot, setbacks, buildings } },
+      { step: mockSteps[2], plan: { lot, setbacks, buildings } },
+      { step: mockSteps[3], plan: { lot, setbacks, buildings, parking } },
+      { step: mockSteps[4], plan: { lot, setbacks, buildings, parking } },
+    ];
+
+    stages.forEach((stage, i) => {
+      setTimeout(() => {
+        if (myRunId !== runId) return;
+        set((s) => ({
+          steps: [...s.steps, stage.step],
+          plan: stage.plan,
+        }));
+        if (i === stages.length - 1) {
+          set({ running: false, loading: false });
+        }
+      }, STEP_INTERVAL_MS * (i + 1));
+    });
+  };
+
   return {
     plan: null,
     steps: [],
@@ -330,6 +374,7 @@ export const useStore = create<State>((set, get) => {
     },
 
     runFromPrompt,
+    replayMockPlan,
 
     loadImportedPlan: (data) => {
       // Invalidate any in-flight stage replays so they don't overwrite the

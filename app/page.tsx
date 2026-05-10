@@ -21,6 +21,7 @@ export default function Home() {
   const loading = useStore((s) => s.loading);
   const voiceSupported = useStore((s) => s.voiceSupported);
   const setVoiceSupported = useStore((s) => s.setVoiceSupported);
+  const replayMockPlan = useStore((s) => s.replayMockPlan);
   const router = useRouter();
 
   useEffect(() => {
@@ -40,6 +41,16 @@ export default function Home() {
     setLoading(true);
     setTimeout(() => {
       router.push(`/plan?mode=${mode}`);
+    }, 650);
+  };
+
+  // Plays the build animation with a hard-coded mock plan — no API call.
+  // Lets you trigger the hammer chop + buildings dropping in for testing.
+  const playDemo = () => {
+    setLoading(true);
+    setTimeout(() => {
+      replayMockPlan();
+      router.push("/plan");
     }, 650);
   };
 
@@ -78,6 +89,13 @@ export default function Home() {
         />
         <ModeButtons supported={voiceSupported} onPick={goToMode} />
         <ExamplePills onPick={setPrompt} />
+        <button
+          type="button"
+          onClick={playDemo}
+          className="font-mono text-[11px] uppercase tracking-[0.25em] text-mute hover:text-accent transition-colors"
+        >
+          ▶ play demo build
+        </button>
       </motion.div>
 
       <motion.footer
