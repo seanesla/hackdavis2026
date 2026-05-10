@@ -22,12 +22,16 @@ export default function Scene({ siteplan }: Props) {
 
   return (
     <Canvas
+      id="plan-canvas"
       shadows
       dpr={[1, 1.5]}
       gl={{
         alpha: true,
         antialias: true,
         powerPreference: "high-performance",
+        // Required so canvas.toDataURL() returns a non-blank PNG for the
+        // NFT-mint screenshot. Minor perf cost on some drivers; negligible here.
+        preserveDrawingBuffer: true,
         // Logarithmic depth distribution — kills z-fighting on layered window
         // trim/glass/mullion planes at long camera distances. At ~zero cost
         // for our geometry budget. Pairs with a tighter near/far range

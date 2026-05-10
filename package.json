@@ -10,16 +10,22 @@
     "start": "next start",
     "lint": "eslint",
     "clean": "rimraf .next",
-    "reset": "rimraf .next node_modules package-lock.json && npm install"
+    "reset": "rimraf .next node_modules package-lock.json && npm install",
+    "generate-wallet": "tsx scripts/generate-wallet.ts"
   },
   "engines": {
     "node": ">=22.0.0"
   },
   "dependencies": {
     "@google/genai": "^2.0.1",
+    "@metaplex-foundation/mpl-core": "^1.10.0",
+    "@metaplex-foundation/umi": "^1.5.1",
+    "@metaplex-foundation/umi-bundle-defaults": "^1.5.1",
+    "@metaplex-foundation/umi-uploader-irys": "^1.5.0",
     "@react-three/drei": "^10.7.7",
     "@react-three/fiber": "^9.6.1",
     "backboard-sdk": "^1.5.14",
+    "bs58": "^6.0.0",
     "framer-motion": "^12.38.0",
     "next": "16.2.6",
     "ogl": "^1.0.11",
@@ -30,6 +36,7 @@
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
+    "@types/bs58": "^4.0.4",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
@@ -39,6 +46,7 @@
     "eslint-config-next": "16.2.6",
     "rimraf": "^6.0.1",
     "tailwindcss": "^4",
+    "tsx": "^4.21.0",
     "typescript": "^5"
   }
 }

@@ -167,6 +167,8 @@ create a `.env.local` in the repo root. only `GEMINI_API_KEY` is required for th
 | `BACKBOARD_API_KEY` | optional | cross-session memory — saving plans, recalling design preferences, ask-your-history chat. without it the app still works; memory features become no-ops. |
 | `ELEVENLABS_API_KEY` | optional | `/api/tts`. without it, voice modes fall back to the browser's built-in `speechSynthesis`. |
 | `ELEVENLABS_VOICE_ID` | optional | overrides the default Rachel voice (`21m00Tcm4TlvDq8ikWAM`). |
+| `SOLANA_SECRET_KEY` | optional | NFT minting. base58-encoded 64-byte secret used by the backend to sign and pay for `/api/mint-plan` mints. without it the route returns 500 with a setup hint. generate via `npm run generate-wallet`. |
+| `SOLANA_RPC_URL` | optional | overrides the default `https://api.devnet.solana.com`. only set if you have a faster devnet RPC. |
 
 ## if `npm run dev` froze your computer
 
@@ -184,3 +186,44 @@ if it still freezes:
 3. confirm you're on Node 22: `node -v`. earlier versions have weaker memory behavior.
 
 why this happens: the project bundles a heavy 3D + animation stack (three.js, react-three-fiber, drei, ogl, framer-motion). on a busy machine with little free RAM, the first compile can OOM and lock the OS. Node now has an 8 GB heap ceiling so it'll error cleanly instead of freezing your computer — but if free RAM is below ~2 GB at compile time, that ceiling won't save you.
+
+## NFT minting (solana devnet)
+
+after a plan finalizes, the side rail shows a **mint as NFT** button. clicking it captures the 3D canvas as a PNG, uploads it + the plan metadata to Arweave (via Irys), and mints a Metaplex Core asset directly to your Phantom wallet. the backend pays — no Phantom popups, no signing on the user side.
+
+### one-time setup
+
+1. **generate a backend keypair**
+
+   ```bash
+   npm run generate-wallet
+   ```
+
+   this creates a fresh keypair, base58-encodes the secret to `.env.local` as `SOLANA_SECRET_KEY`, and prints the public address. it refuses to overwrite an existing key.
+
+2. **fund it with devnet SOL** — copy the printed address and either:
+
+   ```bash
+   solana airdrop 2 <address> --url devnet
+   ```
+
+   or paste the address into [faucet.solana.com](https://faucet.solana.com) (pick devnet). 1 SOL is plenty for many mints; airdrop limits are per-address-per-epoch, so re-run if you hit the cap.
+
+3. **restart the dev server** so it picks up the new env var.
+
+4. **point Phantom at devnet** — open Phantom → settings → developer settings → change network → devnet.
+
+### testing the full flow
+
+1. generate any plan ("0.5 acre lot, 2-story brick townhouse, oak trees along the front") and wait for the run to finalize
+2. click **mint as NFT** — Phantom asks for permission to share your address (one-time per origin); approve it
+3. the modal shows a spinner for ~5–15s while the backend uploads to Arweave and lands the tx
+4. on success, click **view on solana explorer** — you'll see the mint, the metadata URI, and the Arweave-hosted PNG. open Phantom → collectibles (devnet) and the NFT shows up there too.
+
+### code layout
+
+- `lib/solana.ts` — singleton `Umi` (devnet RPC + mpl-core + Irys uploader) keyed off `SOLANA_SECRET_KEY`
+- `app/api/mint-plan/route.ts` — accepts `{ imageBase64, planJson, recipientAddress, brief }`; returns `{ signature, mintAddress, metadataUri, explorerUrl }`. caps `imageBase64` at 3 MB and rate-limits to 2 mints / minute / IP.
+- `lib/phantom.ts` — typed Phantom provider; reads the public key only, never signs
+- `components/plan/MintNftButton.tsx` — captures the canvas (scoped to `id="plan-canvas"`), calls the endpoint, renders the success/error modal
+- `scripts/generate-wallet.ts` — keypair generator, run via `npm run generate-wallet`
