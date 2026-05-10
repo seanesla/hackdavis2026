@@ -100,7 +100,11 @@ function PlanInner() {
           />
         )}
       </motion.main>
-      <SideRail />
+      {/* On voice-mode entry the conversation overlay is the entire UI.
+          Defer SideRail (with its hammer slot) until the user finalizes —
+          `running` flips synchronously inside runFromPrompt, and `plan`
+          covers the case where they re-land on the page with a build. */}
+      {(!isVoiceMode || running || plan) && <SideRail />}
       <SceneTools />
       <TransparencyPill />
     </div>

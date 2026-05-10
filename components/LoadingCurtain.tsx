@@ -34,17 +34,25 @@ export default function LoadingCurtain() {
       {active && (
         <motion.div
           key="curtain"
-          className="fixed inset-0 z-[80] pointer-events-none flex flex-col items-center justify-center"
+          // On /plan, the SideRail (glass panel, top-4 left-4 w-[400px])
+          // covers the left ~416px, so centering on the full viewport puts
+          // the hammer well to the left of the visible 3D scene area. Pad
+          // the left by the SideRail's right edge so the flex centering
+          // happens in the remaining (visible) render area.
+          className={`fixed inset-0 z-[80] pointer-events-none flex flex-col items-center justify-center ${
+            onPlan ? "pl-[416px]" : ""
+          }`}
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
           transition={{ duration: 0.5 }}
         >
           {/* Hammer + caption render as a single column centered on the
-              viewport, so the hammer sits directly above the text and the
-              two read as one anchored unit. Sized to match the SideRail
-              slot (400×260) so the visual weight stays consistent across
-              the hand-off when planning completes. */}
+              visible render area (offset by the SideRail on /plan), so the
+              hammer sits directly above the text and the two read as one
+              anchored unit. Sized to match the SideRail slot (400×260) so
+              the visual weight stays consistent across the hand-off when
+              planning completes. */}
           <motion.div
             className="w-[400px] h-[260px]"
             initial={{ opacity: 0, scale: 0.85, y: -20 }}
