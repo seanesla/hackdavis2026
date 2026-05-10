@@ -1,16 +1,11 @@
 "use client";
 import { motion } from "framer-motion";
 
-// Examples are tuned to read as community-scale projects — the kind of
-// thing a neighborhood group, family, or small nonprofit would actually
-// sketch before talking to an architect or city planner. Each is short
-// enough to render without truncation (~58 char display cap) while still
-// giving the AI enough cues to produce a meaningful layout.
 const examples = [
-  "0.4 ac community garden with a small pavilion",
-  "0.2 ac lot, ADU for elder family, ~600 sqft",
-  "1 ac corner lot, small neighborhood library",
-  "1 ac small church with a community room",
+  "0.5 acre lot, 25 ft front setback, 10 ft sides, fit a 3-story building with 12 parking spots.",
+  "quarter-acre infill lot, single-family home, 2 stories, 4 parking stalls.",
+  "1 acre lot, mixed-use 4-story building, 30 parking spaces.",
+  "0.3 acre corner lot, duplex with shared driveway, 6 stalls.",
 ];
 
 type Props = { onPick: (s: string) => void };
