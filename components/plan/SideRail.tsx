@@ -2,6 +2,7 @@
 import { useEffect, useRef, useState } from "react";
 import { motion } from "framer-motion";
 import Link from "next/link";
+import dynamic from "next/dynamic";
 import { useStore } from "@/lib/store";
 import Step from "./Step";
 import AccentPicker from "@/components/AccentPicker";
@@ -10,9 +11,19 @@ import MintNftButton from "./MintNftButton";
 import { downloadPlan } from "@/lib/exportPlan";
 import { isSpeechSupported } from "@/lib/speech";
 
+// Hammer renders inside the slot directly — it is part of the panel DOM,
+// not a body-level fixed overlay positioned via getBoundingClientRect.
+// That means it moves with the panel automatically (scroll, layout reflow,
+// transform — anything). No tracking math, no drift.
+const Hammer3D = dynamic(() => import("@/components/hammer/Hammer3D"), {
+  ssr: false,
+  loading: () => null,
+});
+
 export default function SideRail() {
   const { prompt, steps, running } = useStore();
   const plan = useStore((s) => s.plan);
+  const loading = useStore((s) => s.loading);
   const runFromPrompt = useStore((s) => s.runFromPrompt);
   const modifyFromPrompt = useStore((s) => s.modifyFromPrompt);
   const voiceSupported = useStore((s) => s.voiceSupported);
@@ -20,6 +31,9 @@ export default function SideRail() {
   const setVoiceModifyOpen = useStore((s) => s.setVoiceModifyOpen);
   const canExport = !!plan && !running;
   const canVoiceModify = !running && !!prompt.trim() && voiceSupported;
+
+  const waiting = (loading || running) && plan === null;
+  const forging = running && plan !== null;
 
   // Detect speech support if the user landed on /plan directly (e.g. via a
   // shared URL) and never went through the landing page where this is set.
@@ -85,6 +99,14 @@ export default function SideRail() {
         className="relative h-[260px] border-b border-rule/60"
       >
         <CompartmentFire />
+        <div className="absolute inset-0">
+          <Hammer3D
+            isLoading={waiting}
+            forging={forging}
+            subtle
+            interactive
+          />
+        </div>
       </div>
 
       <div className="px-6 py-4 border-b border-rule/60">

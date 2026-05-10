@@ -438,7 +438,7 @@ export async function POST(req: Request) {
   try {
     for (iterations = 0; iterations < iterationCap; iterations++) {
       const response = await ai.models.generateContent({
-        model: "gemini-3-flash-preview",
+        model: "gemini-3.1-flash-lite",
         contents,
         config: {
           systemInstruction,

@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { motion } from "framer-motion";
+import { motion, useMotionValue, animate } from "framer-motion";
 import { usePathname } from "next/navigation";
 import dynamic from "next/dynamic";
 import { useStore } from "@/lib/store";
@@ -22,11 +22,11 @@ const SIDEBAR_SCALE = 1;
 const FALLBACK_W = 400;
 const FALLBACK_H = 260;
 
-// Horizontal nudge applied to the center pose on /plan, so the drafting
-// hammer reads as centered within the *visible scene area* (right of the
-// SideRail) instead of within the whole viewport. The SideRail occupies
-// `left-4 w-[400px]` = 16+400 = 416px on the left; half that is 208.
-const PLAN_CENTER_NUDGE_X = 208;
+// The drafting hammer centers in the full renderer area (whole viewport),
+// not in the "visible scene area" right of the SideRail. The SideRail is
+// glass over the renderer, so the hammer reading as centered in the
+// viewport keeps it where the user expects without snapping to the right
+// every time /plan loads.
 
 type Slot = "center" | "sidebar" | "hidden";
 
@@ -105,8 +105,6 @@ export default function FloatingHammer() {
     return "hidden";
   }, [waiting, pathname]);
 
-  const onPlan = pathname?.startsWith("/plan") ?? false;
-
   // Don't start the hammer chop until the floating hammer has finished its
   // 750ms fly-to-sidebar animation. Otherwise it strikes mid-flight, which
   // looks weird and reads as "sideways" because it's hammering while the
@@ -123,12 +121,10 @@ export default function FloatingHammer() {
 
   const { centerX, centerY } = useMemo(
     () => ({
-      centerX:
-        (vw - slotRect.w * CENTER_SCALE) / 2 +
-        (onPlan ? PLAN_CENTER_NUDGE_X : 0),
+      centerX: (vw - slotRect.w * CENTER_SCALE) / 2,
       centerY: (vh - slotRect.h * CENTER_SCALE) / 2,
     }),
-    [vw, vh, slotRect.w, slotRect.h, onPlan],
+    [vw, vh, slotRect.w, slotRect.h],
   );
 
   const target = useMemo(() => {
@@ -166,6 +162,43 @@ export default function FloatingHammer() {
     }
   }, [shouldRender]);
 
+  // Drive position via motion values so we can distinguish two cases:
+  //   1. Slot CHANGED (e.g. center → sidebar) — tween smoothly over 750ms.
+  //   2. Slot tracking inside the same slot (slotRect updates as the panel
+  //      animates in or layout reflows) — set() instantly so the hammer
+  //      stays glued to the panel rather than chasing it through a tween.
+  // Using framer's declarative animate={{x: target.x}} would re-start a
+  // 750ms tween every time slotRect.x updated, which is why the hammer
+  // appeared "stuck to the screen" — it was perpetually mid-tween, never
+  // catching up to the panel's true position.
+  const x = useMotionValue(centerX);
+  const y = useMotionValue(-(vh * 1.1));
+  const scaleMV = useMotionValue(CENTER_SCALE);
+  const opacityMV = useMotionValue(0);
+  const rotateMV = useMotionValue(-10);
+
+  const prevSlotRef = useRef<Slot | null>(null);
+  useEffect(() => {
+    if (vw === 0) return;
+    const slotChanged = prevSlotRef.current !== slot;
+    prevSlotRef.current = slot;
+
+    const tween = { duration: 0.75, ease: [0.22, 1, 0.36, 1] as const };
+    if (slotChanged) {
+      animate(x, target.x, tween);
+      animate(y, target.y, tween);
+      animate(scaleMV, target.scale, tween);
+      animate(opacityMV, target.opacity, { duration: 0.4 });
+      animate(rotateMV, 0, tween);
+    } else {
+      // Same slot, only slotRect/centerX/centerY changed — track instantly.
+      // scale/opacity/rotate aren't slot-tracking-dependent, so leave them
+      // at whatever the last tween settled them at.
+      x.set(target.x);
+      y.set(target.y);
+    }
+  }, [slot, target.x, target.y, target.scale, target.opacity, vw, x, y, scaleMV, opacityMV, rotateMV]);
+
   if (!shouldRender) return null;
 
   // r3f's <canvas> defaults to pointer-events: auto, which would block
@@ -185,27 +218,11 @@ export default function FloatingHammer() {
         width: slotRect.w,
         height: slotRect.h,
         transformOrigin: "top left",
-      }}
-      initial={{
-        x: centerX,
-        y: -(vh * 1.1),
-        scale: CENTER_SCALE,
-        opacity: 0,
-        rotate: -10,
-      }}
-      animate={{
-        x: target.x,
-        y: target.y,
-        scale: target.scale,
-        opacity: target.opacity,
-        rotate: 0,
-      }}
-      transition={{
-        x: { type: "tween", duration: 0.75, ease: [0.22, 1, 0.36, 1] },
-        y: { type: "tween", duration: 0.75, ease: [0.22, 1, 0.36, 1] },
-        scale: { type: "tween", duration: 0.75, ease: [0.22, 1, 0.36, 1] },
-        opacity: { duration: 0.4 },
-        rotate: { type: "tween", duration: 0.75, ease: [0.22, 1, 0.36, 1] },
+        x,
+        y,
+        scale: scaleMV,
+        opacity: opacityMV,
+        rotate: rotateMV,
       }}
     >
       <Hammer3D
