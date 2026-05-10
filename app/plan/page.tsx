@@ -100,12 +100,10 @@ function PlanInner() {
         className="absolute inset-0"
       >
         {showSceneUi && <Scene />}
+        {showSceneUi && <NorthArrow />}
+        {showSceneUi && <ScaleBar />}
         {showSceneUi && <DebugToggle />}
-        <Scene />
-        <DebugToggle />
-        <NorthArrow />
-        <ScaleBar />
-        <TitleBlock />
+        {showSceneUi && <TitleBlock />}
         {modeParam === "interview" && <InterviewFlow />}
         {modeParam === "freestyle" && <FreestyleFlow />}
         {voiceModifyOpen && (

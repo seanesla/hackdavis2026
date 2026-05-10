@@ -1,4 +1,5 @@
 "use client";
+import { useEffect, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { usePathname } from "next/navigation";
 import dynamic from "next/dynamic";
@@ -21,17 +22,21 @@ export default function LoadingCurtain() {
   const pathname = usePathname();
   const onPlan = pathname?.startsWith("/plan") ?? false;
   // Voice flows (interview/freestyle) own the screen with their own
-  // conversation/build UI — no global hammer overlay in this lane. Read
-  // `?mode=` directly from window.location instead of useSearchParams so
-  // we don't pull this client component into a Suspense boundary at the
-  // root layout (that combo caused a black flash during navigation).
-  // `mode` is set at /plan entry and doesn't change mid-session, and the
-  // curtain re-renders on every store/pathname change, so synchronous
-  // reads stay in sync without an explicit subscription.
-  const inVoiceFlow =
-    onPlan &&
-    typeof window !== "undefined" &&
-    /[?&]mode=(interview|freestyle)\b/.test(window.location.search);
+  // conversation/build UI — no global hammer overlay in this lane.
+  //
+  // Defer the `?mode=` read to a useEffect so the initial server render
+  // and the initial client hydration both compute `inVoiceFlow=false`,
+  // avoiding the SSR/CSR text mismatch (`typeof window !== "undefined"`
+  // diverges between the two passes). Reading via useSearchParams would
+  // be cleaner but pulls this layout-level component into a Suspense
+  // boundary that previously caused a black flash during navigation.
+  const [inVoiceFlow, setInVoiceFlow] = useState(false);
+  useEffect(() => {
+    setInVoiceFlow(
+      onPlan &&
+        /[?&]mode=(interview|freestyle)\b/.test(window.location.search),
+    );
+  }, [onPlan, pathname]);
   // On /plan, hide once the first stage lands and buildings start animating —
   // the centered overlay would otherwise cover the construction.
   const active =
