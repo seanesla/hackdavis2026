@@ -3,6 +3,8 @@ import path from "path";
 import { BackboardClient } from "backboard-sdk";
 import type { SitePlan } from "./types";
 
+export const USER_ID = "hackathon-user-1";
+
 export type StoredSession = {
   id: string;
   userId: string;
@@ -70,7 +72,12 @@ async function persistThreadId(userId: string, threadId: string): Promise<void> 
 function summarize(plan: SitePlan): string {
   const acres = ((plan.lot.width * plan.lot.depth) / 43560).toFixed(2);
   const parts = [`${acres} acre lot`];
-  if (plan.building) parts.push(`${plan.building.stories}-story building`);
+  const buildings = plan.buildings ?? [];
+  if (buildings.length === 1) {
+    parts.push(`${buildings[0].stories}-story building`);
+  } else if (buildings.length > 1) {
+    parts.push(`${buildings.length} buildings`);
+  }
   if (plan.parking?.length) parts.push(`${plan.parking.length} parking spots`);
   return parts.join(", ");
 }

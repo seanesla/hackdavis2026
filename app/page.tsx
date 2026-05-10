@@ -8,8 +8,8 @@ import PastPlans from "@/components/PastPlans";
 import TransitionWipe from "@/components/TransitionWipe";
 import AccentPicker from "@/components/AccentPicker";
 
-const ContourBackground = dynamic(
-  () => import("@/components/bg/ContourBackground"),
+const AccentGrainient = dynamic(
+  () => import("@/components/bg/AccentGrainient"),
   { ssr: false }
 );
 
@@ -19,7 +19,7 @@ export default function Home() {
 
   return (
     <main className="relative flex-1 flex flex-col items-center justify-center px-6 py-12 overflow-hidden">
-      <ContourBackground />
+      <AccentGrainient />
 
       <header className="absolute top-0 left-0 right-0 flex items-center justify-between px-6 py-5">
         <span className="font-mono text-xs tracking-[0.2em] text-mute uppercase">

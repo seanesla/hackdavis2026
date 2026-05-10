@@ -2,10 +2,13 @@
 import { create } from "zustand";
 import type { SitePlan, Step } from "./types";
 
+type Stage = { step: Step; plan: SitePlan | null };
+
 type State = {
   plan: SitePlan | null;
   steps: Step[];
   running: boolean;
+  error: string | null;
   prompt: string;
   setPrompt: (s: string) => void;
   runFromPrompt: (p: string) => Promise<void>;
@@ -14,59 +17,98 @@ type State = {
 
 const STEP_INTERVAL_MS = 800;
 
-function applyStep(prev: SitePlan | null, step: Step, finalPlan: SitePlan): SitePlan {
-  switch (step.tool) {
-    case "set_lot":
-      return { lot: finalPlan.lot, setbacks: finalPlan.setbacks };
-    case "place_building":
-      return { ...(prev ?? finalPlan), building: finalPlan.building };
-    case "place_parking":
-      return { ...(prev ?? finalPlan), parking: finalPlan.parking };
-    default:
-      return prev ?? finalPlan;
-  }
-}
+export const useStore = create<State>((set, get) => {
+  // Used to drop stale interval ticks if a new run starts (or reset is called)
+  // before the previous run's stages finish replaying.
+  let runId = 0;
 
-export const useStore = create<State>((set, get) => ({
-  plan: null,
-  steps: [],
-  running: false,
-  prompt: "",
-  setPrompt: (s) => set({ prompt: s }),
-  reset: () => set({ plan: null, steps: [], running: false }),
-  runFromPrompt: async (p) => {
-    if (get().running) return;
-    set({ running: true, steps: [], plan: null, prompt: p });
+  return {
+    plan: null,
+    steps: [],
+    running: false,
+    error: null,
+    prompt: "",
 
-    let plan: SitePlan;
-    let steps: Step[];
-    try {
-      const res = await fetch("/api/plan", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ prompt: p }),
+    setPrompt: (s) => set({ prompt: s }),
+
+    reset: () => {
+      runId++;
+      set({ plan: null, steps: [], running: false, error: null });
+    },
+
+    runFromPrompt: async (p) => {
+      if (get().running) return;
+      const myRunId = ++runId;
+
+      set({
+        running: true,
+        steps: [],
+        plan: null,
+        error: null,
+        prompt: p,
       });
-      const data = (await res.json()) as { plan: SitePlan; steps: Step[] };
-      plan = data.plan;
-      steps = data.steps ?? [];
-    } catch {
-      set({ running: false });
-      return;
-    }
 
-    if (steps.length === 0) {
-      set({ plan, running: false });
-      return;
-    }
+      let data: {
+        ok: boolean;
+        stages?: Stage[];
+        plan?: SitePlan | null;
+        error?: string;
+        retryAfterSeconds?: number | null;
+      };
 
-    steps.forEach((step, i) => {
-      setTimeout(() => {
-        set((s) => ({
-          steps: [...s.steps, step],
-          plan: applyStep(s.plan, step, plan),
-        }));
-        if (i === steps.length - 1) set({ plan, running: false });
-      }, STEP_INTERVAL_MS * (i + 1));
-    });
-  },
-}));
+      try {
+        const res = await fetch("/api/plan", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ prompt: p }),
+        });
+        data = await res.json();
+      } catch (err) {
+        if (myRunId !== runId) return;
+        set({
+          running: false,
+          error: err instanceof Error ? err.message : "Network error",
+        });
+        return;
+      }
+
+      if (myRunId !== runId) return;
+
+      if (!data.ok) {
+        const message = data.retryAfterSeconds
+          ? `${data.error} Retry in ~${data.retryAfterSeconds}s.`
+          : data.error ?? "Planning failed.";
+        set({
+          running: false,
+          error: message,
+          steps: [{ tool: "error", note: message, ok: false }],
+        });
+        return;
+      }
+
+      const stages = data.stages ?? [];
+      if (stages.length === 0) {
+        set({
+          running: false,
+          plan: data.plan ?? null,
+          error: "Agent returned no steps.",
+        });
+        return;
+      }
+
+      // Replay stages with intervals so per-step drop animations land cleanly.
+      stages.forEach((stage, i) => {
+        setTimeout(() => {
+          if (myRunId !== runId) return;
+          set((s) => ({
+            steps: [...s.steps, stage.step],
+            plan: stage.plan,
+          }));
+          if (i === stages.length - 1) {
+            set({ running: false });
+          }
+        }, STEP_INTERVAL_MS * (i + 1));
+      });
+    },
+  };
+});
