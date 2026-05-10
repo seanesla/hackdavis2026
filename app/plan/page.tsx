@@ -12,10 +12,21 @@ const AccentGrainient = dynamic(
   () => import("@/components/bg/AccentGrainient"),
   { ssr: false }
 );
+const InterviewFlow = dynamic(
+  () => import("@/components/voice/InterviewFlow"),
+  { ssr: false, loading: () => null }
+);
+const FreestyleFlow = dynamic(
+  () => import("@/components/voice/FreestyleFlow"),
+  { ssr: false, loading: () => null }
+);
 
 function PlanInner() {
   const params = useSearchParams();
   const promptParam = params.get("prompt") ?? "";
+  const modeParam = params.get("mode");
+  const isVoiceMode = modeParam === "interview" || modeParam === "freestyle";
+
   const runFromPrompt = useStore((s) => s.runFromPrompt);
   const prompt = useStore((s) => s.prompt);
   const running = useStore((s) => s.running);
@@ -27,10 +38,11 @@ function PlanInner() {
   const selectFloor = useStore((s) => s.selectFloor);
 
   useEffect(() => {
+    if (isVoiceMode) return;
     if (promptParam && promptParam !== prompt && !running && steps.length === 0) {
       runFromPrompt(promptParam);
     }
-  }, [promptParam, prompt, running, steps.length, runFromPrompt]);
+  }, [promptParam, prompt, running, steps.length, runFromPrompt, isVoiceMode]);
 
   // The moment the plan stops streaming, kick off interior generation for
   // every unique (footprint × story) so the user gets an instant 3D reveal
@@ -69,6 +81,8 @@ function PlanInner() {
       >
         <Scene />
         <DebugToggle />
+        {modeParam === "interview" && <InterviewFlow />}
+        {modeParam === "freestyle" && <FreestyleFlow />}
       </motion.main>
       <SideRail />
     </div>
