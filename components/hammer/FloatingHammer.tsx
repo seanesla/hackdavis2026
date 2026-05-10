@@ -7,11 +7,23 @@ import { useStore } from "@/lib/store";
 
 const Hammer3D = dynamic(() => import("./Hammer3D"), { ssr: false });
 
-const SIZE = 384;
-const CENTER_SCALE = 320 / SIZE;
+// Hammer in center pose is shown a little smaller than its natural size so
+// it doesn't dominate the landing page; the GPU transform handles the visual
+// shrink while the underlying R3F canvas stays at slot dimensions (no resize
+// thrash, fire planes stay frustum-fit).
+const CENTER_SCALE = 0.83;
 const SIDEBAR_SCALE = 1;
 
+// Used while the sidebar compartment hasn't mounted yet (e.g. on the landing
+// page, or the first frame after navigating to /plan). Matches the
+// `h-[400px]` div in `components/plan/SideRail.tsx` so the canvas size is
+// stable across slots.
+const FALLBACK_W = 400;
+const FALLBACK_H = 400;
+
 type Slot = "center" | "sidebar" | "hidden";
+
+type Rect = { x: number; y: number; w: number; h: number };
 
 export default function FloatingHammer() {
   const loading = useStore((s) => s.loading);
@@ -20,20 +32,48 @@ export default function FloatingHammer() {
 
   const [vw, setVw] = useState(0);
   const [vh, setVh] = useState(0);
+  const [slotRect, setSlotRect] = useState<Rect>({
+    x: 0,
+    y: 0,
+    w: FALLBACK_W,
+    h: FALLBACK_H,
+  });
 
   useEffect(() => {
-    const update = () => {
-      setVw((prev) =>
-        prev !== window.innerWidth ? window.innerWidth : prev,
-      );
-      setVh((prev) =>
-        prev !== window.innerHeight ? window.innerHeight : prev,
+    const updateViewport = () => {
+      setVw(window.innerWidth);
+      setVh(window.innerHeight);
+    };
+    updateViewport();
+    window.addEventListener("resize", updateViewport);
+    return () => window.removeEventListener("resize", updateViewport);
+  }, []);
+
+  // Track the SideRail's hammer compartment. Re-measure on resize and a
+  // couple of beats after a route change (the compartment mounts after the
+  // first paint of /plan, so an immediate read returns null).
+  useEffect(() => {
+    const measure = () => {
+      const el = document.getElementById("hammer-slot");
+      if (!el) return;
+      const r = el.getBoundingClientRect();
+      setSlotRect((prev) =>
+        prev.x === r.left && prev.y === r.top &&
+        prev.w === r.width && prev.h === r.height
+          ? prev
+          : { x: r.left, y: r.top, w: r.width, h: r.height },
       );
     };
-    update();
-    window.addEventListener("resize", update);
-    return () => window.removeEventListener("resize", update);
-  }, []);
+    measure();
+    const t1 = window.setTimeout(measure, 50);
+    const t2 = window.setTimeout(measure, 250);
+    window.addEventListener("resize", measure);
+    return () => {
+      window.removeEventListener("resize", measure);
+      window.clearTimeout(t1);
+      window.clearTimeout(t2);
+    };
+  }, [pathname]);
 
   const slot: Slot = useMemo(() => {
     if (loading || running) return "center";
@@ -43,10 +83,10 @@ export default function FloatingHammer() {
 
   const { centerX, centerY } = useMemo(
     () => ({
-      centerX: vw / 2 - (SIZE * CENTER_SCALE) / 2,
-      centerY: vh / 2 - (SIZE * CENTER_SCALE) / 2,
+      centerX: (vw - slotRect.w * CENTER_SCALE) / 2,
+      centerY: (vh - slotRect.h * CENTER_SCALE) / 2,
     }),
-    [vw, vh],
+    [vw, vh, slotRect.w, slotRect.h],
   );
 
   const target = useMemo(() => {
@@ -54,12 +94,17 @@ export default function FloatingHammer() {
       case "center":
         return { x: centerX, y: centerY, scale: CENTER_SCALE, opacity: 1 };
       case "sidebar":
-        return { x: 24, y: 64, scale: SIDEBAR_SCALE, opacity: 1 };
+        return {
+          x: slotRect.x,
+          y: slotRect.y,
+          scale: SIDEBAR_SCALE,
+          opacity: 1,
+        };
       case "hidden":
       default:
         return { x: centerX, y: centerY, scale: CENTER_SCALE, opacity: 0 };
     }
-  }, [slot, centerX, centerY]);
+  }, [slot, centerX, centerY, slotRect.x, slotRect.y]);
 
   if (vw === 0) return null;
 
@@ -69,8 +114,8 @@ export default function FloatingHammer() {
       style={{
         top: 0,
         left: 0,
-        width: SIZE,
-        height: SIZE,
+        width: slotRect.w,
+        height: slotRect.h,
         transformOrigin: "top left",
       }}
       initial={{
