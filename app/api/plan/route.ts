@@ -8,6 +8,7 @@ import {
 import { TOOLS } from "@/lib/tools";
 import { TOOL_DECLARATIONS, ALLOWED_TOOL_NAMES } from "@/lib/toolDeclarations";
 import { isInsideSetbacks } from "@/lib/geometry";
+import { USER_ID, buildMemoryContext, saveSession } from "@/lib/backboard";
 import type { SitePlan, Step } from "@/lib/types";
 
 export const runtime = "nodejs";
@@ -240,6 +241,12 @@ export async function POST(req: Request) {
 
   const ai = new GoogleGenAI({ apiKey });
 
+  // Pull a short summary of past sessions from Backboard (if available) and
+  // prepend it to the system prompt so the agent can use prior context as
+  // weak defaults when the new prompt is vague.
+  const memory = await buildMemoryContext(USER_ID).catch(() => "");
+  const systemInstruction = memory ? `${SYSTEM_PROMPT}\n\n${memory}` : SYSTEM_PROMPT;
+
   // Conversation history. Gemini multi-turn function calling requires us to
   // append both the model's function-call turn and our function-response turn
   // each round, so the model sees the running history of what it tried.
@@ -257,7 +264,7 @@ export async function POST(req: Request) {
         model: "gemini-3-flash-preview",
         contents,
         config: {
-          systemInstruction: SYSTEM_PROMPT,
+          systemInstruction,
           tools: [{ functionDeclarations: TOOL_DECLARATIONS }],
           toolConfig: {
             functionCallingConfig: {
@@ -314,6 +321,13 @@ export async function POST(req: Request) {
       if (finalized) break;
     }
 
+    if (plan) {
+      // Best-effort persistence — never let a Backboard outage fail the render.
+      await saveSession(USER_ID, plan, prompt).catch((err) => {
+        console.error("[backboard] saveSession failed", err);
+      });
+    }
+
     return Response.json({
       ok: true,
       plan,
@@ -346,6 +360,11 @@ export async function POST(req: Request) {
       };
       steps.push(synthStep);
       stages.push({ step: synthStep, plan });
+      if (plan) {
+        await saveSession(USER_ID, plan, prompt).catch((saveErr) => {
+          console.error("[backboard] saveSession failed", saveErr);
+        });
+      }
       return Response.json({
         ok: true,
         plan,
