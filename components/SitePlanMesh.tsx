@@ -1845,6 +1845,662 @@ function RooftopHVAC({
   );
 }
 
+// Balcony — protruding deck with a low rail panel. Local +Z is the outward
+// direction (away from the wall); the parent group's rotation aims it at the
+// correct facade.
+function Balcony({
+  width,
+  preset,
+  accent,
+  hasGlassRail,
+}: {
+  width: number;
+  preset: MaterialPreset;
+  accent: string;
+  hasGlassRail: boolean;
+}) {
+  const depth = 3.2;
+  const slabH = 0.25;
+  const railH = 3.2;
+  const railColor = hasGlassRail ? "#9fc4d6" : preset.edge;
+  const railRoughness = hasGlassRail ? 0.18 : 0.6;
+  const railMetalness = hasGlassRail ? 0.4 : 0.4;
+  const railOpacity = hasGlassRail ? 0.55 : 1;
+  const railTransparent = hasGlassRail;
+  return (
+    <group>
+      <mesh position={[0, slabH / 2, depth / 2]} castShadow receiveShadow>
+        <boxGeometry args={[width, slabH, depth]} />
+        <meshStandardMaterial
+          color={preset.floorLine}
+          roughness={0.7}
+          metalness={preset.metalness * 0.4}
+        />
+      </mesh>
+      <mesh position={[0, slabH + railH / 2, depth - 0.04]} castShadow>
+        <boxGeometry args={[width, railH, 0.08]} />
+        <meshStandardMaterial
+          color={railColor}
+          roughness={railRoughness}
+          metalness={railMetalness}
+          transparent={railTransparent}
+          opacity={railOpacity}
+        />
+      </mesh>
+      <mesh
+        position={[-width / 2 + 0.04, slabH + railH / 2, depth / 2]}
+        castShadow
+      >
+        <boxGeometry args={[0.08, railH, depth]} />
+        <meshStandardMaterial
+          color={railColor}
+          roughness={railRoughness}
+          metalness={railMetalness}
+          transparent={railTransparent}
+          opacity={railOpacity}
+        />
+      </mesh>
+      <mesh
+        position={[width / 2 - 0.04, slabH + railH / 2, depth / 2]}
+        castShadow
+      >
+        <boxGeometry args={[0.08, railH, depth]} />
+        <meshStandardMaterial
+          color={railColor}
+          roughness={railRoughness}
+          metalness={railMetalness}
+          transparent={railTransparent}
+          opacity={railOpacity}
+        />
+      </mesh>
+      <mesh position={[0, slabH + railH, depth - 0.04]}>
+        <boxGeometry args={[width, 0.08, 0.12]} />
+        <meshStandardMaterial
+          color={accent}
+          emissive={accent}
+          emissiveIntensity={0.25}
+          roughness={0.45}
+        />
+      </mesh>
+    </group>
+  );
+}
+
+// Balconies — distributes balconies across upper stories on every available
+// facade. Always skips the ground floor so the entrance trim stays clean.
+// Front balconies dodge the central entrance bay by sitting on the side
+// portions of the south wall.
+function Balconies({
+  w,
+  d,
+  stories,
+  preset,
+  accent,
+}: {
+  w: number;
+  d: number;
+  stories: number;
+  preset: MaterialPreset;
+  accent: string;
+}) {
+  if (stories < 2) return null;
+  const isGlassy = preset.label === "glass" || preset.label === "steel";
+  const sideBalconyW = Math.min(10, Math.max(5, d * 0.4));
+  const frontBalconyW = Math.min(8, Math.max(4, w * 0.22));
+  const sideX = w / 2;
+  const frontZ = d / 2;
+
+  return (
+    <group>
+      {Array.from({ length: stories }).map((_, i) => {
+        if (i < 1) return null;
+        const y = i * STORY_HEIGHT_FT;
+        const frontInset = w * 0.28;
+        return (
+          <group key={`bal-${i}`}>
+            {/* East face (always) */}
+            <group position={[sideX, y, 0]} rotation={[0, -Math.PI / 2, 0]}>
+              <Balcony
+                width={sideBalconyW}
+                preset={preset}
+                accent={accent}
+                hasGlassRail={isGlassy}
+              />
+            </group>
+            {/* West face — for buildings wide enough that two side balconies
+                don't crowd the elevation. */}
+            {w >= 24 && (
+              <group position={[-sideX, y, 0]} rotation={[0, Math.PI / 2, 0]}>
+                <Balcony
+                  width={sideBalconyW}
+                  preset={preset}
+                  accent={accent}
+                  hasGlassRail={isGlassy}
+                />
+              </group>
+            )}
+            {/* Front face — skipped on the immediate floor above the entrance
+                so the door header / canopy stays unobstructed. Two narrow
+                balconies flank the entrance bay on stories >= 2. */}
+            {i >= 2 && w >= 28 && (
+              <>
+                <group position={[-frontInset, y, -frontZ]} rotation={[0, Math.PI, 0]}>
+                  <Balcony
+                    width={frontBalconyW}
+                    preset={preset}
+                    accent={accent}
+                    hasGlassRail={isGlassy}
+                  />
+                </group>
+                <group position={[frontInset, y, -frontZ]} rotation={[0, Math.PI, 0]}>
+                  <Balcony
+                    width={frontBalconyW}
+                    preset={preset}
+                    accent={accent}
+                    hasGlassRail={isGlassy}
+                  />
+                </group>
+              </>
+            )}
+          </group>
+        );
+      })}
+    </group>
+  );
+}
+
+// RoofTerrace — full-coverage rooftop amenity deck with multiple zones:
+// dining, lounge under a pergola, a bar counter, perimeter planters, and
+// overhead string lights. Modeled after typical modern rooftop amenities
+// (sectional lounge, pergola shade, dining table, bar, planters).
+function RoofTerrace({
+  w,
+  d,
+  baseY,
+  accent,
+}: {
+  w: number;
+  d: number;
+  baseY: number;
+  accent: string;
+}) {
+  // Cover ~85% of the roof; leave a 4 ft parapet gutter all around.
+  const margin = 4;
+  const tw = w - margin * 2;
+  const td = d - margin * 2;
+  if (tw < 14 || td < 14) return null;
+
+  // Zone layout (x to the east, z to the north):
+  //   NE quadrant (+x, +z): pergola + L-sofa lounge
+  //   NW quadrant (-x, +z): dining table + 4 chairs
+  //   south strip (-z half): bar counter + stools
+  // Planters live along the perimeter; string lights span the diagonal.
+
+  const ne = { x: tw * 0.22, z: td * 0.22 };  // lounge zone center
+  const nw = { x: -tw * 0.25, z: td * 0.22 }; // dining zone center
+  const south = { x: 0, z: -td * 0.32 };       // bar zone center
+
+  // Pergola sized to the lounge zone.
+  const pergW = Math.min(16, tw * 0.42);
+  const pergD = Math.min(14, td * 0.42);
+  const pergH = 7.2;
+  const slatCount = 7;
+  const showPergola = pergW > 5 && pergD > 5;
+
+  // L-sofa: long arm runs east-west, short arm runs north-south against the
+  // pergola's back side. Sofa modules are 2 ft deep, 2 ft tall.
+  const sofaLongLen = pergW * 0.8;
+  const sofaShortLen = pergD * 0.55;
+
+  // Dining table footprint.
+  const dineW = Math.min(7, tw * 0.22);
+  const dineD = Math.min(4, td * 0.18);
+
+  // Bar counter footprint along the south edge.
+  const barW = Math.min(14, tw * 0.55);
+  const barD = 1.6;
+
+  // Perimeter planters — distributed every ~14 ft along the long edges,
+  // skipping spots that would collide with zone furniture. Deterministic.
+  const planterPositions: { x: number; z: number; size: number }[] = [];
+  const addPlanter = (x: number, z: number, size = 2.8) => {
+    planterPositions.push({ x, z, size });
+  };
+  // North edge — small flank planters at the corners of the dining + lounge zones
+  addPlanter(-tw / 2 + 1.5, td / 2 - 1.5);
+  addPlanter(tw / 2 - 1.5, td / 2 - 1.5);
+  // West edge — couple along
+  addPlanter(-tw / 2 + 1.5, td * 0.0);
+  addPlanter(-tw / 2 + 1.5, -td * 0.25);
+  // East edge
+  addPlanter(tw / 2 - 1.5, td * 0.0);
+  addPlanter(tw / 2 - 1.5, -td * 0.3);
+  // South corners
+  addPlanter(-tw / 2 + 1.5, -td / 2 + 1.5);
+  addPlanter(tw / 2 - 1.5, -td / 2 + 1.5);
+  // Center divider planter between dining and lounge
+  addPlanter(0, td * 0.32, 2.4);
+
+  return (
+    <group position={[0, baseY, 0]}>
+      {/* ── Paved deck — main slab ── */}
+      <mesh position={[0, 0.1, 0]} receiveShadow>
+        <boxGeometry args={[tw, 0.2, td]} />
+        <meshStandardMaterial color="#c9b894" roughness={0.85} metalness={0} />
+      </mesh>
+      {/* Lighter inset rug-like accent under dining zone */}
+      <mesh position={[nw.x, 0.21, nw.z]} receiveShadow>
+        <boxGeometry args={[dineW + 4, 0.02, dineD + 4]} />
+        <meshStandardMaterial color="#b6a07a" roughness={0.9} />
+      </mesh>
+      {/* Darker rug-like accent under lounge zone */}
+      <mesh position={[ne.x, 0.21, ne.z]} receiveShadow>
+        <boxGeometry args={[pergW + 1, 0.02, pergD + 1]} />
+        <meshStandardMaterial color="#8a7a5e" roughness={0.9} />
+      </mesh>
+      {/* Paver groove lines — horizontal accents */}
+      {[-td * 0.4, -td * 0.15, td * 0.05, td * 0.4].map((zPos, i) => (
+        <mesh key={`pv-h-${i}`} position={[0, 0.215, zPos]}>
+          <boxGeometry args={[tw * 0.95, 0.02, 0.08]} />
+          <meshStandardMaterial color="#a89a7a" roughness={0.8} />
+        </mesh>
+      ))}
+      {/* Paver groove lines — vertical accents */}
+      {[-tw * 0.3, 0, tw * 0.3].map((xPos, i) => (
+        <mesh key={`pv-v-${i}`} position={[xPos, 0.215, 0]}>
+          <boxGeometry args={[0.08, 0.02, td * 0.95]} />
+          <meshStandardMaterial color="#a89a7a" roughness={0.8} />
+        </mesh>
+      ))}
+
+      {/* ── Perimeter planters ── */}
+      {planterPositions.map((p, i) => {
+        const ph = p.size * 0.7;
+        return (
+          <group key={`pl-${i}`} position={[p.x, 0.2, p.z]}>
+            <mesh position={[0, ph / 2, 0]} castShadow receiveShadow>
+              <boxGeometry args={[p.size, ph, p.size]} />
+              <meshStandardMaterial color="#5d4030" roughness={0.85} />
+            </mesh>
+            {/* Planter rim — slightly lighter strip on top */}
+            <mesh position={[0, ph + 0.04, 0]}>
+              <boxGeometry args={[p.size + 0.1, 0.06, p.size + 0.1]} />
+              <meshStandardMaterial color="#74543e" roughness={0.85} />
+            </mesh>
+            {/* Foliage cluster — 2 spheres for fuller look */}
+            <mesh position={[0, ph + 0.7, 0]} castShadow>
+              <sphereGeometry args={[p.size * 0.55, 12, 10]} />
+              <meshStandardMaterial color="#4a6b3a" roughness={0.95} />
+            </mesh>
+            <mesh position={[p.size * 0.18, ph + 1.0, p.size * 0.12]} castShadow>
+              <sphereGeometry args={[p.size * 0.42, 10, 8]} />
+              <meshStandardMaterial color="#5a7a48" roughness={0.95} />
+            </mesh>
+          </group>
+        );
+      })}
+
+      {/* ── Pergola (NE quadrant) ── */}
+      {showPergola && (
+        <group position={[ne.x, 0.2, ne.z]}>
+          {[
+            [-pergW / 2, -pergD / 2],
+            [pergW / 2, -pergD / 2],
+            [-pergW / 2, pergD / 2],
+            [pergW / 2, pergD / 2],
+          ].map(([px, pz], i) => (
+            <mesh key={`post-${i}`} position={[px, pergH / 2, pz]} castShadow>
+              <boxGeometry args={[0.32, pergH, 0.32]} />
+              <meshStandardMaterial color="#3d2a1c" roughness={0.85} />
+            </mesh>
+          ))}
+          {/* Cross beams along south + north edges */}
+          <mesh position={[0, pergH, -pergD / 2]} castShadow>
+            <boxGeometry args={[pergW + 0.4, 0.32, 0.32]} />
+            <meshStandardMaterial color="#3d2a1c" roughness={0.85} />
+          </mesh>
+          <mesh position={[0, pergH, pergD / 2]} castShadow>
+            <boxGeometry args={[pergW + 0.4, 0.32, 0.32]} />
+            <meshStandardMaterial color="#3d2a1c" roughness={0.85} />
+          </mesh>
+          {/* Slats — running across the top */}
+          {Array.from({ length: slatCount }).map((_, i) => {
+            const t = (i + 0.5) / slatCount;
+            const px = -pergW / 2 + t * pergW;
+            return (
+              <mesh
+                key={`slat-${i}`}
+                position={[px, pergH + 0.18, 0]}
+                castShadow
+              >
+                <boxGeometry args={[0.2, 0.22, pergD + 0.6]} />
+                <meshStandardMaterial color="#4a3325" roughness={0.85} />
+              </mesh>
+            );
+          })}
+          {/* Accent strip on top — picks up user accent color */}
+          <mesh position={[0, pergH + 0.36, 0]}>
+            <boxGeometry args={[pergW * 0.95, 0.05, 0.2]} />
+            <meshStandardMaterial
+              color={accent}
+              emissive={accent}
+              emissiveIntensity={0.3}
+              roughness={0.45}
+            />
+          </mesh>
+          {/* Hanging pendant lights under the pergola */}
+          {[-pergW * 0.25, pergW * 0.25].map((px, i) => (
+            <group key={`pend-${i}`} position={[px, pergH - 0.6, 0]}>
+              <mesh>
+                <boxGeometry args={[0.04, 0.6, 0.04]} />
+                <meshStandardMaterial color="#1a1a1a" />
+              </mesh>
+              <mesh position={[0, -0.4, 0]}>
+                <sphereGeometry args={[0.18, 12, 10]} />
+                <meshStandardMaterial
+                  color="#fff5d0"
+                  emissive="#ffe49a"
+                  emissiveIntensity={0.9}
+                />
+              </mesh>
+            </group>
+          ))}
+        </group>
+      )}
+
+      {/* ── L-sofa under the pergola (long arm + short arm) ── */}
+      <group position={[ne.x, 0.2, ne.z]}>
+        {/* Long arm — runs east-west, against the south edge of the pergola */}
+        <group position={[0, 0, -pergD / 2 + 1.4]}>
+          <mesh position={[0, 1.0, 0]} castShadow receiveShadow>
+            <boxGeometry args={[sofaLongLen, 1.2, 2.6]} />
+            <meshStandardMaterial color="#454540" roughness={0.85} />
+          </mesh>
+          <mesh position={[0, 2.1, -1.0]} castShadow>
+            <boxGeometry args={[sofaLongLen, 1.0, 0.5]} />
+            <meshStandardMaterial color="#454540" roughness={0.85} />
+          </mesh>
+          {/* Cushion accent — top of seat */}
+          <mesh position={[0, 1.65, 0.6]}>
+            <boxGeometry args={[sofaLongLen * 0.95, 0.3, 1.1]} />
+            <meshStandardMaterial color="#9c9088" roughness={0.85} />
+          </mesh>
+        </group>
+        {/* Short arm — runs north-south, against the west edge */}
+        <group position={[-pergW / 2 + 1.3, 0, sofaShortLen / 2 - 1.4]}>
+          <mesh position={[0, 1.0, 0]} castShadow receiveShadow>
+            <boxGeometry args={[2.6, 1.2, sofaShortLen]} />
+            <meshStandardMaterial color="#454540" roughness={0.85} />
+          </mesh>
+          <mesh position={[-1.0, 2.1, 0]} castShadow>
+            <boxGeometry args={[0.5, 1.0, sofaShortLen]} />
+            <meshStandardMaterial color="#454540" roughness={0.85} />
+          </mesh>
+          <mesh position={[0.6, 1.65, 0]}>
+            <boxGeometry args={[1.1, 0.3, sofaShortLen * 0.95]} />
+            <meshStandardMaterial color="#9c9088" roughness={0.85} />
+          </mesh>
+        </group>
+        {/* Coffee table in front of the sofa */}
+        <mesh position={[0.5, 0.95, 0.8]} castShadow receiveShadow>
+          <boxGeometry args={[3.2, 0.18, 1.8]} />
+          <meshStandardMaterial color="#7a5a3a" roughness={0.7} />
+        </mesh>
+        <mesh position={[0.5, 0.45, 0.8]}>
+          <boxGeometry args={[2.8, 0.9, 1.4]} />
+          <meshStandardMaterial color="#5a4528" roughness={0.7} />
+        </mesh>
+      </group>
+
+      {/* ── Dining zone (NW quadrant) ── */}
+      <group position={[nw.x, 0.2, nw.z]}>
+        {/* Table top */}
+        <mesh position={[0, 1.5, 0]} castShadow receiveShadow>
+          <boxGeometry args={[dineW, 0.14, dineD]} />
+          <meshStandardMaterial color="#7a5a3a" roughness={0.7} />
+        </mesh>
+        {/* Table legs */}
+        {[
+          [-dineW / 2 + 0.3, 0, -dineD / 2 + 0.3],
+          [dineW / 2 - 0.3, 0, -dineD / 2 + 0.3],
+          [-dineW / 2 + 0.3, 0, dineD / 2 - 0.3],
+          [dineW / 2 - 0.3, 0, dineD / 2 - 0.3],
+        ].map(([x, , z], i) => (
+          <mesh key={`leg-${i}`} position={[x, 0.75, z]} castShadow>
+            <boxGeometry args={[0.16, 1.5, 0.16]} />
+            <meshStandardMaterial
+              color="#1a1a1a"
+              roughness={0.5}
+              metalness={0.4}
+            />
+          </mesh>
+        ))}
+        {/* 4 chairs — two on each long side */}
+        {[
+          { x: -dineW * 0.25, z: -dineD / 2 - 1.1, ry: 0 },
+          { x: dineW * 0.25, z: -dineD / 2 - 1.1, ry: 0 },
+          { x: -dineW * 0.25, z: dineD / 2 + 1.1, ry: Math.PI },
+          { x: dineW * 0.25, z: dineD / 2 + 1.1, ry: Math.PI },
+        ].map((c, i) => (
+          <group
+            key={`ch-${i}`}
+            position={[c.x, 0, c.z]}
+            rotation={[0, c.ry, 0]}
+          >
+            {/* Seat */}
+            <mesh position={[0, 0.95, 0]} castShadow>
+              <boxGeometry args={[1.4, 0.16, 1.4]} />
+              <meshStandardMaterial color="#3a3a3a" roughness={0.7} />
+            </mesh>
+            {/* Back */}
+            <mesh position={[0, 1.7, -0.6]} castShadow>
+              <boxGeometry args={[1.4, 1.5, 0.18]} />
+              <meshStandardMaterial color="#3a3a3a" roughness={0.7} />
+            </mesh>
+            {/* Legs */}
+            {[
+              [-0.55, -0.5],
+              [0.55, -0.5],
+              [-0.55, 0.5],
+              [0.55, 0.5],
+            ].map(([lx, lz], j) => (
+              <mesh key={`cleg-${j}`} position={[lx, 0.45, lz]} castShadow>
+                <boxGeometry args={[0.1, 0.9, 0.1]} />
+                <meshStandardMaterial
+                  color="#1a1a1a"
+                  roughness={0.5}
+                  metalness={0.4}
+                />
+              </mesh>
+            ))}
+          </group>
+        ))}
+      </group>
+
+      {/* ── Bar counter (south strip) ── */}
+      <group position={[south.x, 0.2, south.z]}>
+        {/* Counter base */}
+        <mesh position={[0, 1.85, 0]} castShadow receiveShadow>
+          <boxGeometry args={[barW, 3.7, barD]} />
+          <meshStandardMaterial color="#3d2a1c" roughness={0.85} />
+        </mesh>
+        {/* Counter top */}
+        <mesh position={[0, 3.78, 0]} castShadow receiveShadow>
+          <boxGeometry args={[barW + 0.5, 0.16, barD + 0.6]} />
+          <meshStandardMaterial color="#222" roughness={0.45} metalness={0.3} />
+        </mesh>
+        {/* Top accent edge */}
+        <mesh position={[0, 3.88, 0]}>
+          <boxGeometry args={[barW * 0.95, 0.04, 0.06]} />
+          <meshStandardMaterial
+            color={accent}
+            emissive={accent}
+            emissiveIntensity={0.4}
+            roughness={0.4}
+          />
+        </mesh>
+        {/* Stools along the front (south side) */}
+        {[-barW * 0.3, 0, barW * 0.3].map((sx, i) => (
+          <group key={`stool-${i}`} position={[sx, 0, barD / 2 + 1.4]}>
+            {/* Cushion */}
+            <mesh position={[0, 2.6, 0]} castShadow>
+              <cylinderGeometry args={[0.55, 0.55, 0.2, 16]} />
+              <meshStandardMaterial color="#454540" roughness={0.8} />
+            </mesh>
+            {/* Pole */}
+            <mesh position={[0, 1.3, 0]} castShadow>
+              <boxGeometry args={[0.12, 2.6, 0.12]} />
+              <meshStandardMaterial
+                color="#1a1a1a"
+                roughness={0.4}
+                metalness={0.6}
+              />
+            </mesh>
+            {/* Base */}
+            <mesh position={[0, 0.05, 0]} castShadow>
+              <cylinderGeometry args={[0.55, 0.55, 0.1, 16]} />
+              <meshStandardMaterial
+                color="#1a1a1a"
+                roughness={0.4}
+                metalness={0.6}
+              />
+            </mesh>
+          </group>
+        ))}
+      </group>
+
+      {/* ── String lights — three drooping garlands strung across the deck ── */}
+      {[td * 0.05, -td * 0.1, -td * 0.25].map((zPos, gi) => (
+        <group key={`gar-${gi}`} position={[0, 0, zPos]}>
+          {/* Cable */}
+          <mesh position={[0, pergH - 1.2, 0]}>
+            <boxGeometry args={[tw * 0.85, 0.04, 0.04]} />
+            <meshStandardMaterial color="#222" />
+          </mesh>
+          {/* Bulbs along the cable */}
+          {Array.from({ length: 9 }).map((_, i) => {
+            const t = (i + 0.5) / 9;
+            const px = -tw * 0.42 + t * tw * 0.85;
+            return (
+              <mesh
+                key={`bulb-${gi}-${i}`}
+                position={[px, pergH - 1.45, 0]}
+              >
+                <sphereGeometry args={[0.12, 8, 6]} />
+                <meshStandardMaterial
+                  color="#fff5d0"
+                  emissive="#ffe49a"
+                  emissiveIntensity={0.85}
+                />
+              </mesh>
+            );
+          })}
+        </group>
+      ))}
+    </group>
+  );
+}
+
+// Corner pilasters — vertical decorative piers at the four corners of the
+// building. Sit slightly proud of each wall plane so they catch shadow and
+// read as deliberate trim. Color matches the cornice/floorLine for a
+// consistent stone-trim feel; metallic for steel/glass.
+function CornerPilasters({
+  w,
+  d,
+  startY,
+  height,
+  preset,
+}: {
+  w: number;
+  d: number;
+  startY: number;
+  height: number;
+  preset: MaterialPreset;
+}) {
+  const pw = 1.0;
+  const corners: [number, number][] = [
+    [w / 2, d / 2],
+    [-w / 2, d / 2],
+    [w / 2, -d / 2],
+    [-w / 2, -d / 2],
+  ];
+  return (
+    <group>
+      {corners.map(([cx, cz], i) => (
+        <mesh
+          key={i}
+          position={[cx, startY + height / 2, cz]}
+          castShadow
+          receiveShadow
+        >
+          <boxGeometry args={[pw, height, pw]} />
+          <meshStandardMaterial
+            color={preset.floorLine}
+            roughness={preset.roughness}
+            metalness={preset.metalness * 0.5}
+          />
+        </mesh>
+      ))}
+    </group>
+  );
+}
+
+// CrownCornice — three-step crown molding at the top of a flat-roof building.
+// Replaces the old single accent strip with a proper "base + middle + top"
+// composition typical of commercial facades: a wide cornice, a narrower
+// frieze, and an accent strip on top.
+function CrownCornice({
+  w,
+  d,
+  height,
+  preset,
+  accent,
+  valid,
+}: {
+  w: number;
+  d: number;
+  height: number;
+  preset: MaterialPreset;
+  accent: string;
+  valid: boolean;
+}) {
+  const accentColor = valid ? accent : COLORS.buildingInvalid;
+  return (
+    <>
+      {/* Wide bottom cornice */}
+      <mesh position={[0, height + 0.4, 0]} castShadow>
+        <boxGeometry args={[w + 1.2, 0.8, d + 1.2]} />
+        <meshStandardMaterial
+          color={preset.floorLine}
+          roughness={preset.roughness}
+          metalness={preset.metalness * 0.5}
+        />
+      </mesh>
+      {/* Mid frieze — a narrower band */}
+      <mesh position={[0, height + 0.95, 0]} castShadow>
+        <boxGeometry args={[w + 0.7, 0.3, d + 0.7]} />
+        <meshStandardMaterial
+          color={preset.edge}
+          roughness={preset.roughness}
+          metalness={preset.metalness * 0.5}
+        />
+      </mesh>
+      {/* Top accent strip */}
+      <mesh position={[0, height + 1.18, 0]}>
+        <boxGeometry args={[w + 0.4, 0.14, d + 0.4]} />
+        <meshStandardMaterial
+          color={accentColor}
+          emissive={accentColor}
+          emissiveIntensity={valid ? 0.45 : 0.2}
+          roughness={0.4}
+          metalness={0.1}
+        />
+      </mesh>
+    </>
+  );
+}
+
 // Pitched gable roof — used for residential materials (wood, brick, stucco).
 // Triangular prism whose ridge runs along whichever footprint axis is longer,
 // so the roof never looks awkwardly squat on a long-and-skinny building.
@@ -3093,6 +3749,17 @@ function DefaultBuilding({
           );
         })}
 
+      {/* Lower-mass corner pilasters — full lower-portion height when split. */}
+      {valid && split !== null && lowerH > 0 && (
+        <CornerPilasters
+          w={building.w}
+          d={building.d}
+          startY={0}
+          height={lowerH}
+          preset={preset}
+        />
+      )}
+
       {/* Front entrance — anchored to ground; doesn't ride the lift. */}
       {valid && (
         <FrontDoor
@@ -3211,6 +3878,29 @@ function DefaultBuilding({
           }
         )}
 
+        {/* Balconies — protruding decks on the upper stories. */}
+        {valid && (
+          <Balconies
+            w={building.w}
+            d={building.d}
+            stories={building.stories}
+            preset={preset}
+            accent={accent}
+          />
+        )}
+
+        {/* Upper-mass corner pilasters — covers the upper segment when split,
+            full height otherwise. */}
+        {valid && (
+          <CornerPilasters
+            w={building.w}
+            d={building.d}
+            startY={split !== null ? lowerH : 0}
+            height={split !== null ? upperH : height}
+            preset={preset}
+          />
+        )}
+
         {/* Roof — gable for low-rise residential, flat parapet otherwise. */}
         {preset.roofStyle === "gable" && valid && building.stories <= 2 ? (
           <GableRoof
@@ -3223,28 +3913,54 @@ function DefaultBuilding({
           />
         ) : (
           <>
-            <mesh position={[0, height + 0.4, 0]} castShadow>
-              <boxGeometry args={[building.w + 0.3, 0.8, building.d + 0.3]} />
-              <meshStandardMaterial
-                color={roofColor}
-                roughness={preset.roughness}
-                metalness={preset.metalness * 0.6}
+            {valid ? (
+              <CrownCornice
+                w={building.w}
+                d={building.d}
+                height={height}
+                preset={preset}
+                accent={accent}
+                valid={valid}
               />
-            </mesh>
-            <mesh position={[0, height + 0.85, 0]}>
-              <boxGeometry
-                args={[building.w + 0.34, 0.15, building.d + 0.34]}
+            ) : (
+              <>
+                <mesh position={[0, height + 0.4, 0]} castShadow>
+                  <boxGeometry args={[building.w + 0.3, 0.8, building.d + 0.3]} />
+                  <meshStandardMaterial
+                    color={roofColor}
+                    roughness={preset.roughness}
+                    metalness={preset.metalness * 0.6}
+                  />
+                </mesh>
+                <mesh position={[0, height + 0.85, 0]}>
+                  <boxGeometry
+                    args={[building.w + 0.34, 0.15, building.d + 0.34]}
+                  />
+                  <meshStandardMaterial
+                    color={COLORS.buildingInvalid}
+                    emissive={COLORS.buildingInvalid}
+                    emissiveIntensity={0.2}
+                    roughness={0.4}
+                    metalness={0.1}
+                  />
+                </mesh>
+              </>
+            )}
+            {valid &&
+              !(building.stories >= 2 && building.w * building.d >= 1500) && (
+                <RooftopHVAC
+                  w={building.w}
+                  d={building.d}
+                  baseY={height + 1.3}
+                />
+              )}
+            {valid && building.stories >= 2 && building.w * building.d >= 1500 && (
+              <RoofTerrace
+                w={building.w}
+                d={building.d}
+                baseY={height + 1.3}
+                accent={accent}
               />
-              <meshStandardMaterial
-                color={valid ? accent : COLORS.buildingInvalid}
-                emissive={valid ? accent : COLORS.buildingInvalid}
-                emissiveIntensity={valid ? 0.45 : 0.2}
-                roughness={0.4}
-                metalness={0.1}
-              />
-            </mesh>
-            {valid && (
-              <RooftopHVAC w={building.w} d={building.d} baseY={height + 0.95} />
             )}
           </>
         )}
