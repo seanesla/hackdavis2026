@@ -85,6 +85,7 @@ type State = {
   setLoading: (b: boolean) => void;
   runFromPrompt: (p: string) => Promise<void>;
   runFromInterview: (answers: InterviewAnswers) => Promise<void>;
+  loadImportedPlan: (data: { plan: SitePlan; steps?: Step[]; prompt?: string }) => void;
   reset: () => void;
   selectFloor: (sel: FloorSelection | null) => void;
   fetchFloorPlan: (force?: boolean) => Promise<void>;
@@ -294,6 +295,23 @@ export const useStore = create<State>((set, get) => {
     },
 
     runFromPrompt,
+
+    loadImportedPlan: (data) => {
+      // Invalidate any in-flight stage replays so they don't overwrite the
+      // imported plan after it lands.
+      runId++;
+      set({
+        plan: data.plan,
+        steps: data.steps ?? [],
+        prompt: data.prompt ?? "",
+        running: false,
+        loading: false,
+        error: null,
+        selectedFloor: null,
+        floorPlans: {},
+        interiors: {},
+      });
+    },
 
     runFromInterview: async (answers) => {
       const prompt = synthesizePrompt(answers);

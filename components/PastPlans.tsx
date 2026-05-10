@@ -1,6 +1,8 @@
 "use client";
 import { useCallback, useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import { useStore } from "@/lib/store";
+import { downloadPlan } from "@/lib/exportPlan";
 import type { SitePlan } from "@/lib/types";
 
 const USER_ID = "hackathon-user-1";
@@ -19,7 +21,17 @@ type Props = {
 
 export default function PastPlans({ onLoad }: Props = {}) {
   const setPromptInStore = useStore((s) => s.setPrompt);
-  const handleLoad = onLoad ?? setPromptInStore;
+  const loadImportedPlan = useStore((s) => s.loadImportedPlan);
+  const router = useRouter();
+  const handleLoadPrompt = onLoad ?? setPromptInStore;
+  const handleOpenSaved = (s: StoredSession) => {
+    loadImportedPlan({
+      plan: s.sitePlan,
+      prompt: s.prompt,
+      steps: [],
+    });
+    router.push("/plan");
+  };
   const [history, setHistory] = useState<StoredSession[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -81,10 +93,27 @@ export default function PastPlans({ onLoad }: Props = {}) {
               {s.prompt}
             </p>
             <button
-              onClick={() => handleLoad(s.prompt)}
+              onClick={() =>
+                downloadPlan({ prompt: s.prompt, plan: s.sitePlan, steps: [] })
+              }
+              title="download this plan as a JSON file"
               className="shrink-0 font-mono text-[10px] uppercase tracking-[0.2em] text-mute hover:text-accent transition-colors px-2 py-1"
             >
-              load ↵
+              export ↓
+            </button>
+            <button
+              onClick={() => handleOpenSaved(s)}
+              title="open the saved plan instantly (no api call)"
+              className="shrink-0 font-mono text-[10px] uppercase tracking-[0.2em] text-mute hover:text-accent transition-colors px-2 py-1"
+            >
+              open ↗
+            </button>
+            <button
+              onClick={() => handleLoadPrompt(s.prompt)}
+              title="put this prompt back in the input (will call gemini again)"
+              className="shrink-0 font-mono text-[10px] uppercase tracking-[0.2em] text-mute/70 hover:text-accent transition-colors px-2 py-1"
+            >
+              re-run ↵
             </button>
           </div>
         ))}

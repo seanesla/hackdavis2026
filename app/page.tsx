@@ -7,6 +7,7 @@ import Hero from "@/components/landing/Hero";
 import PromptBar from "@/components/landing/PromptBar";
 import ExamplePills from "@/components/landing/ExamplePills";
 import PastPlans from "@/components/PastPlans";
+import ImportPlanButton from "@/components/ImportPlanButton";
 import AccentPicker from "@/components/AccentPicker";
 import { isSpeechSupported, primeMicPermission } from "@/lib/speech";
 import { useStore } from "@/lib/store";
@@ -79,6 +80,7 @@ export default function Home() {
         />
         <ModeButtons supported={voiceSupported} onPick={goToMode} />
         <ExamplePills onPick={setPrompt} />
+        <ImportPlanButton />
         <PastPlans onLoad={setPrompt} />
       </motion.div>
 
