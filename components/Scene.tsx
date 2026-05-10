@@ -1,7 +1,12 @@
 "use client";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
-import { ContactShadows, Grid, OrbitControls } from "@react-three/drei";
+import {
+  ContactShadows,
+  Environment,
+  Grid,
+  OrbitControls,
+} from "@react-three/drei";
 import * as THREE from "three";
 import SitePlanMesh from "./SitePlanMesh";
 import { useStore } from "@/lib/store";
@@ -13,6 +18,7 @@ type Props = { siteplan?: SitePlan | null };
 export default function Scene({ siteplan }: Props) {
   const [interacted, setInteracted] = useState(false);
   const accent = useAccent((s) => s.accent.hex);
+  const selectFloor = useStore((s) => s.selectFloor);
 
   return (
     <Canvas
@@ -31,6 +37,7 @@ export default function Scene({ siteplan }: Props) {
       }}
       camera={{ position: [120, 110, 140], fov: 38, near: 5, far: 1500 }}
       onPointerDown={() => setInteracted(true)}
+      onPointerMissed={() => selectFloor(null)}
       onCreated={({ gl }) => {
         gl.toneMapping = THREE.ACESFilmicToneMapping;
         gl.toneMappingExposure = 1.05;
@@ -42,6 +49,11 @@ export default function Scene({ siteplan }: Props) {
         });
       }}
     >
+      {/* HDRI environment — image-based lighting only (no visible background).
+          Glass and steel buildings pick up sky reflections; brick / wood get
+          warmer ambient tones than the bare hemisphere light could provide. */}
+      <Environment preset="city" background={false} environmentIntensity={0.55} />
+
       {/* Hemisphere — sky tint above, inky bounce below. Matches contour bg. */}
       <hemisphereLight args={["#e6dec8", "#0b0b0c", 0.55]} />
 

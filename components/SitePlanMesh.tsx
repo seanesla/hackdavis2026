@@ -1,5 +1,5 @@
-﻿"use client";
-import { useMemo, useRef } from "react";
+"use client";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useFrame, useThree } from "@react-three/fiber";
 import { Edges, Html, Line, RoundedBox } from "@react-three/drei";
 import * as THREE from "three";
@@ -25,9 +25,12 @@ function LODSentinel() {
 }
 import { useStore } from "@/lib/store";
 import { useAccent } from "@/lib/accent";
+import { useDebugStore } from "@/lib/debugStore";
+import { rectsOverlap, type Rect } from "@/lib/geometry";
 import {
   STORY_HEIGHT_FT,
   type BuildingMaterial,
+  type Bush,
   type Fence,
   type SitePlan,
   type StreetProp,
@@ -45,6 +48,21 @@ import {
   TARGET_FENCE_HEIGHT_FT,
   TREE_MODELS,
 } from "@/lib/modelConfig";
+import {
+  FLOOR_COLORS,
+  FURNITURE_CATALOG,
+  FURNITURE_COLORS,
+  type FurnitureItem,
+  type FurnitureKind,
+  type Room,
+  interiorCacheKey,
+} from "@/lib/furniture";
+
+// How far above the lot the upper portion of a building lifts when one of
+// its floors is selected. Big enough to clearly expose the floor plan plane
+// at the selected level, small enough that the lift reads as the same
+// building (not a separate object).
+const STORY_LIFT_FT = 14;
 
 const SCAFFOLD_BOX = { w: 30, d: 30, h: 24 };
 
@@ -179,6 +197,7 @@ export default function SitePlanMesh({ siteplan }: Props) {
   const storePlan = useStore((s) => s.plan);
   const accent = useAccent((s) => s.accent.hex);
   const plan = siteplan !== undefined ? siteplan : storePlan;
+  const debug = useDebugOverlay();
 
   if (!plan || plan.lot.width <= 0 || plan.lot.depth <= 0) {
     return (
@@ -195,7 +214,8 @@ export default function SitePlanMesh({ siteplan }: Props) {
     );
   }
 
-  const { lot, setbacks, buildings, parking, trees, walkways, fences, props } = plan;
+  const { lot, setbacks, buildings, parking, trees, walkways, fences, props, bushes } =
+    plan;
   const buildable = isBuildable(lot, setbacks);
   const validBuildings = (buildings ?? []).filter(
     (b) => b.w > 0 && b.d > 0 && b.stories > 0
@@ -205,27 +225,51 @@ export default function SitePlanMesh({ siteplan }: Props) {
   return (
     <group position={[-lot.width / 2, 0, -lot.depth / 2]}>
       <LODSentinel />
-      <Lot lot={lot} accent={accent} />
-      {buildable ? (
-        <SetbackEnvelope lot={lot} setbacks={setbacks} color={accent} />
-      ) : (
-        <SetbackWarning lot={lot} />
+      {/* All ground-plane elements pass through SiteworkLayer so the streetscape
+          curb cuts + crosswalks land at the exact same x as the auto walks
+          and driveway. No more drifting / mismatched layouts. */}
+      <SiteworkLayer
+        lot={lot}
+        setbacks={setbacks}
+        buildings={validBuildings}
+        parking={stalls}
+        accent={accent}
+        buildable={buildable}
+        manualWalkways={walkways}
+      />
+
+      {debug && (
+        <DebugOverlay
+          lot={lot}
+          setbacks={setbacks}
+          buildings={validBuildings}
+          parking={stalls}
+          autoPaths={computeAutoPaths(
+            lot,
+            validBuildings,
+            stalls,
+            (walkways?.length ?? 0) > 0
+          )}
+        />
       )}
 
-      {(walkways ?? []).map((w, i) => (
-        <WalkwayMesh key={`wk-${i}-${w.x1}-${w.z1}-${w.x2}-${w.z2}`} walkway={w} delay={i * 0.05} />
-      ))}
-
-      {validBuildings.map((b, i) => (
-        <Building
-          key={`${i}-${b.x}-${b.z}-${b.w}-${b.d}-${b.stories}`}
-          building={b}
-          siblings={validBuildings}
-          valid={isInsideSetbacks(b, lot, setbacks)}
-          accent={accent}
-          delay={i * 0.15}
-        />
-      ))}
+      {validBuildings.map((b, i) => {
+        // The click handler keys on the original index in plan.buildings so
+        // it round-trips with the server route, which also reads from the
+        // SitePlan by index. Filter above may have dropped invalid entries.
+        const buildingIndex = (buildings ?? []).indexOf(b);
+        return (
+          <Building
+            key={`${i}-${b.x}-${b.z}-${b.w}-${b.d}-${b.stories}`}
+            building={b}
+            buildingIndex={buildingIndex}
+            siblings={validBuildings}
+            valid={isInsideSetbacks(b, lot, setbacks)}
+            accent={accent}
+            delay={i * 0.15}
+          />
+        );
+      })}
 
       {stalls.map((p, i) => (
         <ParkingStall key={`${p.x}-${p.z}-${i}`} index={i} x={p.x} z={p.z} />
@@ -233,6 +277,10 @@ export default function SitePlanMesh({ siteplan }: Props) {
 
       {(trees ?? []).map((t, i) => (
         <TreeMesh key={`tr-${i}-${t.x}-${t.z}`} tree={t} delay={i * 0.04} />
+      ))}
+
+      {(bushes ?? []).map((b, i) => (
+        <BushMesh key={`bu-${i}-${b.x}-${b.z}`} bush={b} delay={0.1 + i * 0.025} />
       ))}
 
       {(fences ?? []).map((f, i) => (
@@ -247,6 +295,762 @@ export default function SitePlanMesh({ siteplan }: Props) {
         />
       ))}
     </group>
+  );
+}
+
+// Procedural lawn texture — generated once and reused across all lots. Mixes
+// warm tan (paper / dry grass) and cool sage (live grass) via perlin-ish
+// noise so the lot reads as ground rather than a flat colored panel. Cheap
+// (256×256 canvas, generated at module load), no GLTF asset needed.
+const LAWN_TEXTURE: THREE.CanvasTexture = (() => {
+  const size = 256;
+  const canvas =
+    typeof document !== "undefined"
+      ? document.createElement("canvas")
+      : ({} as HTMLCanvasElement);
+  if (!("getContext" in canvas)) {
+    // SSR or pre-DOM. Return a placeholder that gets replaced once mounted.
+    const tex = new THREE.CanvasTexture(new ImageData(2, 2).data as unknown as HTMLCanvasElement);
+    return tex;
+  }
+  canvas.width = canvas.height = size;
+  const ctx = canvas.getContext("2d")!;
+  // Warm tan base.
+  ctx.fillStyle = "#dcd2bc";
+  ctx.fillRect(0, 0, size, size);
+  // Layered noise blobs in two greens + a deeper tan for shading.
+  const tints = ["#a8b08a", "#8e9a72", "#c2b89c", "#b6c096"];
+  for (let layer = 0; layer < 4; layer++) {
+    ctx.fillStyle = tints[layer % tints.length];
+    ctx.globalAlpha = 0.18 + layer * 0.06;
+    for (let i = 0; i < 240; i++) {
+      const x = Math.random() * size;
+      const y = Math.random() * size;
+      const r = 4 + Math.random() * 18;
+      ctx.beginPath();
+      ctx.arc(x, y, r, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+  // Fine grass-grain speckle.
+  ctx.globalAlpha = 0.4;
+  ctx.fillStyle = "#5e6c46";
+  for (let i = 0; i < 1500; i++) {
+    ctx.fillRect(Math.random() * size, Math.random() * size, 1, 1);
+  }
+  ctx.globalAlpha = 1;
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+})();
+
+// Auto-streetscape — sidewalk + curb + asphalt street + lane stripe + a
+// centered crosswalk along the lot's FRONT edge (z = 0 in lot-local space).
+// Always rendered when there's a lot. Deterministic — no AI control.
+// Single orchestrator for everything that touches the ground plane: streetscape,
+// lawn, lot pad, setback envelope, manual walkways, auto walks/driveway, stoops.
+// Computing paths once here keeps the curb cuts, crosswalks, and walks all
+// aligned to identical x positions. No more drifting / mismatched layouts.
+// Reads the shared debug state and registers the keyboard shortcut. The
+// in-canvas button (DebugToggleButton, rendered by the planner page) flips
+// the same store boolean, so button and shortcut stay in sync.
+function useDebugOverlay(): boolean {
+  const enabled = useDebugStore((s) => s.enabled);
+  const toggle = useDebugStore((s) => s.toggle);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.shiftKey && (e.key === "D" || e.key === "d")) {
+        const target = e.target as HTMLElement | null;
+        if (
+          target &&
+          (target.tagName === "INPUT" || target.tagName === "TEXTAREA")
+        )
+          return;
+        toggle();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [toggle]);
+  return enabled;
+}
+
+// Floats above the scene with depthTest disabled so labels never get hidden
+// behind buildings. Press shift+D to toggle.
+function DebugOverlay({
+  lot,
+  setbacks,
+  buildings,
+  parking,
+  autoPaths,
+}: {
+  lot: SitePlan["lot"];
+  setbacks: SitePlan["setbacks"];
+  buildings: NonNullable<SitePlan["buildings"]>;
+  parking: NonNullable<SitePlan["parking"]>;
+  autoPaths: AutoPath[];
+}) {
+  const Y = 0.4; // sits just above the lot top, below buildings
+
+  return (
+    <group>
+      {/* Lot outline (red) */}
+      <Line
+        points={[
+          [0, Y, 0],
+          [lot.width, Y, 0],
+          [lot.width, Y, lot.depth],
+          [0, Y, lot.depth],
+          [0, Y, 0],
+        ]}
+        color="#ff3030"
+        lineWidth={1.5}
+        depthTest={false}
+        renderOrder={999}
+      />
+
+      {/* Setback envelope (orange dashed) */}
+      <Line
+        points={[
+          [setbacks.side, Y, setbacks.front],
+          [lot.width - setbacks.side, Y, setbacks.front],
+          [lot.width - setbacks.side, Y, lot.depth - setbacks.back],
+          [setbacks.side, Y, lot.depth - setbacks.back],
+          [setbacks.side, Y, setbacks.front],
+        ]}
+        color="#ff8800"
+        lineWidth={1}
+        dashed
+        dashSize={2}
+        gapSize={1.5}
+        depthTest={false}
+        renderOrder={999}
+      />
+
+      {/* Buildings (magenta) with footprint labels + door dot */}
+      {buildings.map((b, i) => (
+        <group key={`db-${i}`}>
+          <Line
+            points={[
+              [b.x, Y, b.z],
+              [b.x + b.w, Y, b.z],
+              [b.x + b.w, Y, b.z + b.d],
+              [b.x, Y, b.z + b.d],
+              [b.x, Y, b.z],
+            ]}
+            color="#ff00ff"
+            lineWidth={1.4}
+            depthTest={false}
+            renderOrder={999}
+          />
+          <mesh position={[b.x + b.w / 2, Y, b.z]} renderOrder={1000}>
+            <sphereGeometry args={[1.4, 10, 8]} />
+            <meshBasicMaterial color="#ff00ff" depthTest={false} />
+          </mesh>
+          <Html position={[b.x + b.w / 2, Y, b.z + b.d / 2]} center>
+            <div className="pointer-events-none whitespace-nowrap rounded bg-fuchsia-700 px-1.5 py-0.5 font-mono text-[10px] uppercase text-white shadow">
+              B{i + 1} · ({b.x},{b.z}) · {b.w}×{b.d}×{b.stories}
+            </div>
+          </Html>
+        </group>
+      ))}
+
+      {/* Parking stalls (cyan) */}
+      {parking.map((s, i) => (
+        <Line
+          key={`ds-${i}`}
+          points={[
+            [s.x, Y, s.z],
+            [s.x + 9, Y, s.z],
+            [s.x + 9, Y, s.z + 18],
+            [s.x, Y, s.z + 18],
+            [s.x, Y, s.z],
+          ]}
+          color="#00cccc"
+          lineWidth={0.9}
+          depthTest={false}
+          renderOrder={999}
+        />
+      ))}
+      {parking.length > 0 && (
+        <Html
+          position={[
+            parking[0].x + 4.5,
+            Y,
+            parking[0].z + 9,
+          ]}
+          center
+        >
+          <div className="pointer-events-none whitespace-nowrap rounded bg-cyan-700 px-1.5 py-0.5 font-mono text-[10px] uppercase text-white shadow">
+            {parking.length} STALLS
+          </div>
+        </Html>
+      )}
+
+      {/* Auto path centerlines (yellow walks, orange driveway) with labels */}
+      {autoPaths.map((p, i) => (
+        <group key={`dp-${i}`}>
+          <Line
+            points={[
+              [p.x1, Y, p.z1],
+              [p.x2, Y, p.z2],
+            ]}
+            color={p.kind === "driveway" ? "#ffaa00" : "#ffff00"}
+            lineWidth={2}
+            depthTest={false}
+            renderOrder={999}
+          />
+          <Html
+            position={[p.x1, Y, (p.z1 + p.z2) / 2]}
+            center
+          >
+            <div className="pointer-events-none whitespace-nowrap rounded bg-yellow-500 px-1.5 py-0.5 font-mono text-[10px] uppercase text-ink shadow">
+              {p.kind} · x={p.x1.toFixed(1)} · w={p.width}
+            </div>
+          </Html>
+        </group>
+      ))}
+
+      {/* Origin marker (red dot at lot front-left corner) */}
+      <mesh position={[0, Y, 0]} renderOrder={1000}>
+        <sphereGeometry args={[1.6, 10, 8]} />
+        <meshBasicMaterial color="#ff0000" depthTest={false} />
+      </mesh>
+      <Html position={[0, Y, -2]} center>
+        <div className="pointer-events-none whitespace-nowrap rounded bg-red-600 px-1.5 py-0.5 font-mono text-[10px] uppercase text-white shadow">
+          ORIGIN (0,0)
+        </div>
+      </Html>
+
+      {/* Status badge — top-left of scene, mostly hovers in view */}
+      <Html
+        position={[0, 4, -12]}
+        zIndexRange={[1000, 0]}
+      >
+        <div className="pointer-events-none whitespace-nowrap rounded bg-black/85 px-2 py-1 font-mono text-[10px] uppercase text-white shadow">
+          DEBUG · shift+D to hide
+        </div>
+      </Html>
+    </group>
+  );
+}
+
+function SiteworkLayer({
+  lot,
+  setbacks,
+  buildings,
+  parking,
+  accent,
+  buildable,
+  manualWalkways,
+}: {
+  lot: SitePlan["lot"];
+  setbacks: SitePlan["setbacks"];
+  buildings: NonNullable<SitePlan["buildings"]>;
+  parking: NonNullable<SitePlan["parking"]>;
+  accent: string;
+  buildable: boolean;
+  manualWalkways?: SitePlan["walkways"];
+}) {
+  const hasManualWalks = (manualWalkways?.length ?? 0) > 0;
+  const autoPaths = useMemo(
+    () => computeAutoPaths(lot, buildings, parking, hasManualWalks),
+    [lot, buildings, parking, hasManualWalks]
+  );
+
+  return (
+    <>
+      <Streetscape lot={lot} paths={autoPaths} />
+      <Lot lot={lot} accent={accent} />
+      <Lawn lot={lot} setbacks={setbacks} />
+      {buildable ? (
+        <SetbackEnvelope lot={lot} setbacks={setbacks} color={accent} />
+      ) : (
+        <SetbackWarning lot={lot} />
+      )}
+      {(manualWalkways ?? []).map((w, i) => (
+        <WalkwayMesh
+          key={`wk-${i}-${w.x1}-${w.z1}-${w.x2}-${w.z2}`}
+          walkway={w}
+          delay={i * 0.05}
+        />
+      ))}
+      <AutoSitework paths={autoPaths} />
+      <Stoops paths={autoPaths} buildings={buildings} />
+    </>
+  );
+}
+
+const STREETSCAPE = {
+  sidewalkDepth: 8, // ft, between curb and lot front edge
+  streetDepth: 30, // ft, asphalt strip beyond the sidewalk
+  overhang: 30, // ft, how far sidewalk + street extend past lot's L/R edges
+  curbThickness: 0.4,
+  curbHeight: 0.18,
+  yLot: 0.04, // sit just below lot top (Y.lotTop = 0.12)
+  yStripe: 0.07,
+  colors: {
+    sidewalk: "#c8c2b0",
+    sidewalkEdge: "#8a8470",
+    curb: "#6e6a60",
+    street: "#3a3a3e",
+    streetEdge: "#1a1a1e",
+    laneLine: "#e8c84a",
+    crosswalk: "#e8e0c8",
+  },
+};
+
+function Streetscape({
+  lot,
+  paths,
+}: {
+  lot: SitePlan["lot"];
+  paths: AutoPath[];
+}) {
+  const c = STREETSCAPE;
+  const totalW = lot.width + 2 * c.overhang;
+  const sidewalkCenterZ = -c.sidewalkDepth / 2;
+  const streetCenterZ = -c.sidewalkDepth - c.streetDepth / 2;
+  const cx = lot.width / 2;
+  const sidewalkY = c.yLot;
+
+  // Lane stripe segments. Skip a segment when it would cross a path's x range
+  // so the dashed line breaks cleanly at curb cuts.
+  const segLen = 5;
+  const gap = 5;
+  const segCount = Math.floor(totalW / (segLen + gap));
+  const startX = cx - (segCount * (segLen + gap) - gap) / 2;
+
+  // Per-path geometry for curb cuts and crosswalks. Front walks get a
+  // crosswalk so pedestrians have an obvious continuation across the street;
+  // driveways get just the curb cut (no crosswalk markings).
+  const cuts = paths.map((p) => {
+    const cutW = p.width + 2; // a little wider than the path itself
+    return {
+      kind: p.kind,
+      x: p.x1, // path is straight in z, so x1 == x2
+      width: p.width,
+      cutW,
+    };
+  });
+
+  // Crosswalk geometry per front walk
+  const crossStripes = 5;
+  const crossStripeW = 1.4;
+  const crossGap = 0.9;
+  const crossSpan =
+    crossStripes * crossStripeW + (crossStripes - 1) * crossGap;
+  const crossDepth = c.streetDepth - 6;
+
+  // Lane-stripe segment skip test — return true if the segment center is
+  // within any cut's x-range (so the line breaks at cuts).
+  const insideAnyCut = (segCenterX: number) =>
+    cuts.some((cut) => Math.abs(segCenterX - cut.x) < cut.cutW / 2 + 1);
+
+  return (
+    <group>
+      {/* Sidewalk slab */}
+      <mesh position={[cx, sidewalkY, sidewalkCenterZ]} receiveShadow>
+        <boxGeometry args={[totalW, 0.08, c.sidewalkDepth]} />
+        <meshStandardMaterial
+          color={c.colors.sidewalk}
+          roughness={0.92}
+          metalness={0}
+        />
+        <Edges color={c.colors.sidewalkEdge} lineWidth={0.5} />
+      </mesh>
+
+      {/* Curb — broken by curb cuts at every path x */}
+      {(() => {
+        // Build curb segments by removing each cut's x-range from the full span
+        const curbY = sidewalkY + c.curbHeight / 2;
+        const curbZ = -c.sidewalkDepth + c.curbThickness / 2;
+        const startXAbs = cx - totalW / 2;
+        const endXAbs = cx + totalW / 2;
+        // Sort cuts by x, build [start, end] segments excluding cut ranges
+        const sortedCuts = [...cuts].sort((a, b) => a.x - b.x);
+        const segs: Array<[number, number]> = [];
+        let s = startXAbs;
+        for (const cut of sortedCuts) {
+          const cutStart = cut.x - cut.cutW / 2;
+          const cutEnd = cut.x + cut.cutW / 2;
+          if (cutStart > s) segs.push([s, cutStart]);
+          s = Math.max(s, cutEnd);
+        }
+        if (s < endXAbs) segs.push([s, endXAbs]);
+        return segs.map(([a, b], i) => {
+          const w = b - a;
+          if (w <= 0.01) return null;
+          return (
+            <mesh
+              key={`curb-${i}`}
+              position={[(a + b) / 2, curbY, curbZ]}
+              castShadow
+              receiveShadow
+            >
+              <boxGeometry args={[w, c.curbHeight, c.curbThickness]} />
+              <meshStandardMaterial color={c.colors.curb} roughness={0.9} />
+            </mesh>
+          );
+        });
+      })()}
+
+      {/* Asphalt street */}
+      <mesh position={[cx, sidewalkY - 0.01, streetCenterZ]} receiveShadow>
+        <boxGeometry args={[totalW, 0.08, c.streetDepth]} />
+        <meshStandardMaterial
+          color={c.colors.street}
+          roughness={0.85}
+          metalness={0.05}
+        />
+        <Edges color={c.colors.streetEdge} lineWidth={0.4} />
+      </mesh>
+
+      {/* Center lane stripe — segments hidden under any curb cut */}
+      {Array.from({ length: segCount }).map((_, i) => {
+        const x = startX + i * (segLen + gap) + segLen / 2;
+        if (insideAnyCut(x)) return null;
+        return (
+          <mesh
+            key={`ll-${i}`}
+            position={[x, c.yStripe, streetCenterZ]}
+          >
+            <boxGeometry args={[segLen, 0.02, 0.4]} />
+            <meshStandardMaterial
+              color={c.colors.laneLine}
+              roughness={0.5}
+              emissive={c.colors.laneLine}
+              emissiveIntensity={0.12}
+            />
+          </mesh>
+        );
+      })}
+
+      {/* Crosswalks — one per front-walk path, aligned with the actual walk */}
+      {cuts
+        .filter((cut) => cut.kind === "front_walk")
+        .flatMap((cut) =>
+          Array.from({ length: crossStripes }).map((_, i) => {
+            const offset =
+              -crossSpan / 2 + i * (crossStripeW + crossGap) + crossStripeW / 2;
+            return (
+              <mesh
+                key={`cw-${cut.x}-${i}`}
+                position={[cut.x + offset, c.yStripe, streetCenterZ]}
+              >
+                <boxGeometry args={[crossStripeW, 0.02, crossDepth]} />
+                <meshStandardMaterial
+                  color={c.colors.crosswalk}
+                  roughness={0.6}
+                  emissive={c.colors.crosswalk}
+                  emissiveIntensity={0.1}
+                />
+              </mesh>
+            );
+          })
+        )}
+    </group>
+  );
+}
+
+// Auto-generates the connecting paths every plan needs:
+//   - 5ft concrete walk from the curb to each building's front door
+//   - 12ft asphalt driveway from the curb to the parking row (when parking exists)
+// Routes around buildings when a direct path is blocked. Skips entirely if the
+// user manually placed any walkway — explicit prompts always win.
+// Computes the auto-paths the renderer + streetscape both need to know about.
+// Hoisted so Streetscape's curb cuts and crosswalks can land at the same x as
+// the actual front walks and driveway. Returns Walkway[] in the same shape as
+// user-placed walkways (so the renderer is uniform).
+type AutoPath = Walkway & { kind: "front_walk" | "driveway"; building?: number };
+
+const STALL_W_FT = 9;
+const STALL_D_FT = 18;
+
+function computeAutoPaths(
+  lot: SitePlan["lot"],
+  buildings: NonNullable<SitePlan["buildings"]>,
+  parking: NonNullable<SitePlan["parking"]>,
+  hasManualWalks: boolean
+): AutoPath[] {
+  if (hasManualWalks) return [];
+  const out: AutoPath[] = [];
+  const buildingRects: Rect[] = buildings.map((b) => ({
+    x: b.x,
+    z: b.z,
+    w: b.w,
+    d: b.d,
+  }));
+  const stallRects: Rect[] = parking.map((p) => ({
+    x: p.x,
+    z: p.z,
+    w: STALL_W_FT,
+    d: STALL_D_FT,
+  }));
+
+  const obstaclesFor = (kind: "walk" | "drive"): Rect[] =>
+    kind === "walk"
+      ? // Walks must avoid both buildings and parking (cars block walks)
+        [...buildingRects, ...stallRects]
+      : // Driveways may pass through parking (that's the destination), but
+        // not through buildings
+        buildingRects;
+
+  // ── Front walks: curb (z = -8) → each building's door
+  for (let i = 0; i < buildings.length; i++) {
+    const b = buildings[i];
+    const doorX = b.x + b.w / 2;
+    if (b.z <= 0) continue;
+    const walkW = 5;
+    const obstacles = obstaclesFor("walk");
+    // Prefer the centered path; if blocked, slide left or right by up to 12ft
+    // in 3ft increments so we still serve a building whose door is partially
+    // occluded by parking.
+    const candidatesX = [
+      doorX,
+      doorX - 3, doorX + 3,
+      doorX - 6, doorX + 6,
+      doorX - 9, doorX + 9,
+      doorX - 12, doorX + 12,
+    ];
+    let chosenX: number | null = null;
+    for (const tx of candidatesX) {
+      if (tx < walkW / 2 || tx > lot.width - walkW / 2) continue;
+      const r: Rect = { x: tx - walkW / 2, z: 0, w: walkW, d: b.z };
+      // Must avoid OTHER buildings + all stalls; the building's own front
+      // face is the destination (we stop at z = b.z).
+      const otherObstacles = obstacles.filter((_, idx) => {
+        // The first `buildingRects.length` entries are buildings — exclude self
+        if (idx < buildingRects.length) return idx !== i;
+        return true;
+      });
+      if (!otherObstacles.some((o) => rectsOverlap(r, o))) {
+        chosenX = tx;
+        break;
+      }
+    }
+    if (chosenX === null) continue;
+    out.push({
+      kind: "front_walk",
+      building: i,
+      x1: chosenX,
+      z1: -8,
+      x2: chosenX,
+      z2: b.z,
+      width: walkW,
+      material: "concrete",
+    });
+  }
+
+  // ── Driveway: curb → front of parking row, routed around buildings.
+  // Prefers the side parking is actually on (not just whichever side has
+  // more clearance from buildings).
+  if (parking.length > 0) {
+    const minZ = Math.min(...parking.map((p) => p.z));
+    const frontRow = parking.filter((p) => p.z < minZ + 2);
+    if (frontRow.length > 0) {
+      const minX = Math.min(...frontRow.map((p) => p.x));
+      const maxX = Math.max(...frontRow.map((p) => p.x)) + STALL_W_FT;
+      const parkingCenterX = (minX + maxX) / 2;
+      const dwayW = 12;
+      const buildingObstacles = obstaclesFor("drive");
+
+      const tryX = (x: number): boolean => {
+        if (x < dwayW / 2 || x > lot.width - dwayW / 2) return false;
+        const r: Rect = { x: x - dwayW / 2, z: 0, w: dwayW, d: minZ };
+        return !buildingObstacles.some((o) => rectsOverlap(r, o));
+      };
+
+      // Prefer ordering: (1) directly aligned with parking, (2) shifted toward
+      // parking-side lot edge in 4ft steps, (3) shifted toward opposite edge
+      // as last resort.
+      const onLeftSide = parkingCenterX < lot.width / 2;
+      const candidates: number[] = [parkingCenterX];
+      const stepsToward = onLeftSide
+        ? [-4, -8, -12, -16, -20]
+        : [4, 8, 12, 16, 20];
+      const stepsAway = onLeftSide
+        ? [4, 8, 12]
+        : [-4, -8, -12];
+      for (const s of stepsToward) candidates.push(parkingCenterX + s);
+      for (const s of stepsAway) candidates.push(parkingCenterX + s);
+      // Lot-edge fallbacks
+      candidates.push(dwayW / 2 + 1);
+      candidates.push(lot.width - dwayW / 2 - 1);
+
+      let dwayX: number | null = null;
+      for (const cx of candidates) {
+        if (tryX(cx)) {
+          dwayX = cx;
+          break;
+        }
+      }
+      if (dwayX !== null) {
+        out.push({
+          kind: "driveway",
+          x1: dwayX,
+          z1: -8,
+          x2: dwayX,
+          z2: minZ,
+          width: dwayW,
+          material: "asphalt",
+        });
+      }
+    }
+  }
+
+  return out;
+}
+
+// Lawn overlay for setback strips — flat planes at y just above the lot top
+// so they cleanly cover the setback areas without z-fighting. Walks render
+// at higher Y above this; buildings sit on top.
+function Lawn({
+  lot,
+  setbacks,
+}: {
+  lot: SitePlan["lot"];
+  setbacks: SitePlan["setbacks"];
+}) {
+  const lawnY = 0.131; // 0.011 above lot top (Y.lotTop = 0.12)
+  const color = "#9ab089";
+  const edge = "#5e6e54";
+
+  const strips: Array<{ x: number; z: number; w: number; d: number }> = [];
+  // Front strip — full width, front-edge to front-setback line
+  if (setbacks.front > 0) {
+    strips.push({
+      x: lot.width / 2,
+      z: setbacks.front / 2,
+      w: lot.width,
+      d: setbacks.front,
+    });
+  }
+  // Back strip
+  if (setbacks.back > 0) {
+    strips.push({
+      x: lot.width / 2,
+      z: lot.depth - setbacks.back / 2,
+      w: lot.width,
+      d: setbacks.back,
+    });
+  }
+  // Side strips — only between front and back setbacks (avoid double-painting corners)
+  const sideD = lot.depth - setbacks.front - setbacks.back;
+  if (setbacks.side > 0 && sideD > 0) {
+    strips.push({
+      x: setbacks.side / 2,
+      z: setbacks.front + sideD / 2,
+      w: setbacks.side,
+      d: sideD,
+    });
+    strips.push({
+      x: lot.width - setbacks.side / 2,
+      z: setbacks.front + sideD / 2,
+      w: setbacks.side,
+      d: sideD,
+    });
+  }
+
+  return (
+    <group>
+      {strips.map((s, i) => (
+        <mesh
+          key={i}
+          position={[s.x, lawnY, s.z]}
+          rotation={[-Math.PI / 2, 0, 0]}
+          receiveShadow
+        >
+          <planeGeometry args={[s.w, s.d]} />
+          <meshStandardMaterial
+            color={color}
+            roughness={0.95}
+            metalness={0}
+            side={THREE.DoubleSide}
+            polygonOffset
+            polygonOffsetFactor={-1}
+            polygonOffsetUnits={-1}
+          />
+        </mesh>
+      ))}
+      {/* Subtle edge line — drafting hairline between yard and lot interior */}
+      <Line
+        points={[
+          [setbacks.side, lawnY + 0.001, setbacks.front],
+          [lot.width - setbacks.side, lawnY + 0.001, setbacks.front],
+          [lot.width - setbacks.side, lawnY + 0.001, lot.depth - setbacks.back],
+          [setbacks.side, lawnY + 0.001, lot.depth - setbacks.back],
+          [setbacks.side, lawnY + 0.001, setbacks.front],
+        ]}
+        color={edge}
+        lineWidth={0.5}
+        transparent
+        opacity={0.4}
+      />
+    </group>
+  );
+}
+
+// Small concrete stoop where each front walk meets a building. Anchors the
+// walk into the building face so it doesn't look like a strip just butting
+// against a wall.
+function Stoops({
+  paths,
+  buildings,
+}: {
+  paths: AutoPath[];
+  buildings: NonNullable<SitePlan["buildings"]>;
+}) {
+  const stoops = paths
+    .filter((p) => p.kind === "front_walk" && p.building !== undefined)
+    .map((p) => {
+      const b = buildings[p.building!];
+      if (!b) return null;
+      return {
+        key: `stoop-${p.building}`,
+        x: b.x + b.w / 2,
+        z: b.z + 0.5, // half a foot inside the building face
+        w: 7,
+        d: 1.6,
+      };
+    })
+    .filter((s): s is NonNullable<typeof s> => s !== null);
+
+  return (
+    <group>
+      {stoops.map((s) => (
+        <mesh
+          key={s.key}
+          position={[s.x, 0.18, s.z]}
+          castShadow
+          receiveShadow
+        >
+          <boxGeometry args={[s.w, 0.36, s.d]} />
+          <meshStandardMaterial color="#bdb6a4" roughness={0.92} />
+          <Edges color="#5e564b" lineWidth={0.4} />
+        </mesh>
+      ))}
+    </group>
+  );
+}
+
+function AutoSitework({
+  paths,
+}: {
+  paths: AutoPath[];
+}) {
+  if (paths.length === 0) return null;
+  return (
+    <>
+      {paths.map((w, i) => (
+        <WalkwayMesh
+          key={`auto-${i}-${w.x1}-${w.z1}-${w.x2}-${w.z2}`}
+          walkway={w}
+          delay={0.4 + i * 0.05}
+        />
+      ))}
+    </>
   );
 }
 
@@ -273,6 +1077,16 @@ function Lot({ lot, accent }: { lot: SitePlan["lot"]; accent: string }) {
     [0, Y.lotBorder, 0],
   ];
 
+  // Tile the procedural lawn at ~one repeat per 80ft so a typical lot shows
+  // 2–6 visible patches and big lots tile naturally instead of stretching.
+  const lawn = useMemo(() => {
+    const t = LAWN_TEXTURE.clone();
+    t.wrapS = t.wrapT = THREE.RepeatWrapping;
+    t.repeat.set(Math.max(1, w / 80), Math.max(1, d / 80));
+    t.needsUpdate = true;
+    return t;
+  }, [w, d]);
+
   return (
     <group>
       <mesh
@@ -283,8 +1097,9 @@ function Lot({ lot, accent }: { lot: SitePlan["lot"]; accent: string }) {
       >
         <boxGeometry args={[w, Y.lotTop, d]} />
         <meshStandardMaterial
+          map={lawn}
           color={COLORS.lotFill}
-          roughness={0.92}
+          roughness={0.94}
           metalness={0}
         />
         <Edges color={COLORS.lotEdge} lineWidth={1.2} />
@@ -463,6 +1278,7 @@ function StoryWindows({
             isGlass={isGlass}
             preset={preset}
             accent={accent}
+            occupancySeed={windowSeed(storyIndex, x, "n")}
           />
         )
       )}
@@ -478,6 +1294,7 @@ function StoryWindows({
             isGlass={isGlass}
             preset={preset}
             accent={accent}
+            occupancySeed={windowSeed(storyIndex, x, "s")}
           />
         )
       )}
@@ -493,6 +1310,7 @@ function StoryWindows({
             isGlass={isGlass}
             preset={preset}
             accent={accent}
+            occupancySeed={windowSeed(storyIndex, z, "e")}
           />
         )
       )}
@@ -508,11 +1326,20 @@ function StoryWindows({
             isGlass={isGlass}
             preset={preset}
             accent={accent}
+            occupancySeed={windowSeed(storyIndex, z, "w")}
           />
         )
       )}
     </group>
   );
+}
+
+// Stable [0,1) hash so the same window keeps the same brightness across
+// re-renders (occupancy doesn't flicker as the camera moves).
+function windowSeed(storyIndex: number, along: number, face: string): number {
+  const faceCode = face.charCodeAt(0);
+  const k = storyIndex * 17.31 + along * 4.137 + faceCode * 91.7;
+  return ((Math.sin(k * 12.9898) * 43758.5453) % 1 + 1) % 1;
 }
 
 // One window unit: trim frame (slightly larger, lighter color) + dark recess
@@ -527,6 +1354,7 @@ function Window({
   isGlass,
   preset,
   accent,
+  occupancySeed = 0.5,
 }: {
   position: [number, number, number];
   rotationY: number;
@@ -535,10 +1363,22 @@ function Window({
   isGlass: boolean;
   preset: MaterialPreset;
   accent: string;
+  occupancySeed?: number;
 }) {
   const trimColor = preset.floorLine; // matches the cornice trim
   const recessColor = "#0a0a10";
   const glassEmissive = preset.windowEmissive ?? accent;
+  // Per-window emissive multiplier — gives the building a "lived in" look
+  // (some units bright, some dim, a few essentially dark) instead of the
+  // uniform glow that screams "rendered building." Glass curtain walls stay
+  // more uniform because real glass towers light evenly at night.
+  const emissiveMul = isGlass
+    ? 0.7 + occupancySeed * 0.6 // 0.7 - 1.3 (gentle variation)
+    : occupancySeed < 0.18
+    ? 0.05 // dark unit (~18% of windows)
+    : occupancySeed < 0.45
+    ? 0.35 + (occupancySeed - 0.18) * 1.0 // dim
+    : 0.7 + (occupancySeed - 0.45) * 1.4; // lit, with brighter outliers
 
   // Outer trim a bit larger than the recess; recess slightly inset so it
   // reads as depth.
@@ -575,13 +1415,15 @@ function Window({
         <planeGeometry args={[winW + 0.04, winH + 0.04]} />
         <meshStandardMaterial color={recessColor} roughness={0.4} metalness={0.2} />
       </mesh>
-      {/* Glass — emissive panel sitting cleanly in front of the recess. */}
+      {/* Glass — emissive panel sitting cleanly in front of the recess.
+          emissiveIntensity scaled by the per-window occupancy seed so the
+          building reads as occupied rather than uniformly lit. */}
       <mesh position={[0, 0, 0.01]}>
         <planeGeometry args={[winW, winH]} />
         <meshStandardMaterial
           color="#0a0a10"
           emissive={glassEmissive}
-          emissiveIntensity={preset.windowIntensity}
+          emissiveIntensity={preset.windowIntensity * emissiveMul}
           roughness={isGlass ? 0.05 : 0.18}
           metalness={isGlass ? 0.6 : 0.35}
         />
@@ -1065,6 +1907,7 @@ function GableRoof({
 
 type BuildingProps = {
   building: NonNullable<SitePlan["buildings"]>[number];
+  buildingIndex: number;
   siblings: NonNullable<SitePlan["buildings"]>;
   valid: boolean;
   accent: string;
@@ -1074,14 +1917,107 @@ type BuildingProps = {
 // Dispatcher — routes to specialized renderers when structure_type calls for
 // a non-standard shape (open parking decks, transparent greenhouse, open
 // pavilion). Anything else falls through to the standard massing renderer.
+// Also overlays per-story click planes that drive the in-model floor reveal.
 function Building(props: BuildingProps) {
   const t: StructureType | undefined = props.building.structure_type;
+  let rendered: React.ReactNode;
   if (props.valid) {
-    if (t === "parking_garage") return <ParkingGarageBuilding {...props} />;
-    if (t === "greenhouse") return <GreenhouseBuilding {...props} />;
-    if (t === "pavilion") return <PavilionBuilding {...props} />;
+    if (t === "parking_garage") rendered = <ParkingGarageBuilding {...props} />;
+    else if (t === "greenhouse") rendered = <GreenhouseBuilding {...props} />;
+    else if (t === "pavilion") rendered = <PavilionBuilding {...props} />;
+    else rendered = <DefaultBuilding {...props} />;
+  } else {
+    rendered = <DefaultBuilding {...props} />;
   }
-  return <DefaultBuilding {...props} />;
+  return (
+    <>
+      {rendered}
+      {props.valid && (
+        <FloorClickPlanes
+          building={props.building}
+          buildingIndex={props.buildingIndex}
+          accent={props.accent}
+        />
+      )}
+    </>
+  );
+}
+
+// Invisible per-story boxes that capture pointer events. A clicked story
+// dispatches the selection into Zustand; DefaultBuilding reacts by lifting
+// its upper portion and fading in the nano-banana floor plan on the cut
+// surface. Click the same floor again (or empty canvas / Escape) to close.
+// Hover paints a subtle ring so the user can see which floor they're aiming at.
+function FloorClickPlanes({
+  building,
+  buildingIndex,
+  accent,
+}: {
+  building: NonNullable<SitePlan["buildings"]>[number];
+  buildingIndex: number;
+  accent: string;
+}) {
+  const cx = building.x + building.w / 2;
+  const cz = building.z + building.d / 2;
+  const selectFloor = useStore((s) => s.selectFloor);
+  const selectedFloor = useStore((s) => s.selectedFloor);
+  const [hoveredStory, setHoveredStory] = useState<number | null>(null);
+
+  return (
+    <group position={[cx, Y.lotTop, cz]}>
+      {Array.from({ length: building.stories }).map((_, i) => {
+        const isSelected =
+          selectedFloor?.buildingIndex === buildingIndex &&
+          selectedFloor?.storyIndex === i;
+        const isHovered = hoveredStory === i;
+        return (
+          <group
+            key={`fp-${i}`}
+            position={[0, i * STORY_HEIGHT_FT + STORY_HEIGHT_FT / 2, 0]}
+          >
+            <mesh
+              onClick={(e) => {
+                e.stopPropagation();
+                if (isSelected) selectFloor(null);
+                else selectFloor({ buildingIndex, storyIndex: i });
+              }}
+              onPointerOver={(e) => {
+                e.stopPropagation();
+                setHoveredStory(i);
+                document.body.style.cursor = "pointer";
+              }}
+              onPointerOut={() => {
+                setHoveredStory((s) => (s === i ? null : s));
+                document.body.style.cursor = "";
+              }}
+            >
+              <boxGeometry
+                args={[building.w + 0.4, STORY_HEIGHT_FT, building.d + 0.4]}
+              />
+              <meshBasicMaterial transparent opacity={0} depthWrite={false} />
+            </mesh>
+            {(isHovered || isSelected) && (
+              <mesh>
+                <boxGeometry
+                  args={[
+                    building.w + 0.6,
+                    STORY_HEIGHT_FT * 0.95,
+                    building.d + 0.6,
+                  ]}
+                />
+                <meshBasicMaterial
+                  color={isSelected ? accent : "#ffffff"}
+                  transparent
+                  opacity={isSelected ? 0.18 : 0.08}
+                  depthWrite={false}
+                />
+              </mesh>
+            )}
+          </group>
+        );
+      })}
+    </group>
+  );
 }
 
 // Multi-level open parking deck — concrete slabs supported by columns.
@@ -1408,8 +2344,562 @@ function PavilionBuilding({
   );
 }
 
+// One LLM-placed piece of furniture rendered as a small set of colored boxes.
+// We special-case a handful of kinds to add recognizable details (pillows on
+// beds, tank on toilets, foliage on plants) without going overboard.
+// Coordinates are building-local (front-left origin); the parent InteriorScene
+// applies the front-left → center shift, so the item uses item.x / item.z raw.
+function FurnitureItemMesh({ item }: { item: FurnitureItem }) {
+  const spec = FURNITURE_CATALOG[item.kind];
+  const color = FURNITURE_COLORS[item.kind];
+  const yaw = (item.yaw ?? 0) * (Math.PI / 180);
+  const detail = renderKindDetail(item.kind, spec, color);
+
+  return (
+    <group position={[item.x, 0, item.z]} rotation={[0, -yaw, 0]}>
+      {detail ?? (
+        <mesh position={[0, spec.h / 2, 0]} castShadow receiveShadow>
+          <boxGeometry args={[spec.w, spec.h, spec.d]} />
+          <meshStandardMaterial color={color} roughness={0.7} metalness={0.05} />
+        </mesh>
+      )}
+    </group>
+  );
+}
+
+function renderKindDetail(
+  kind: FurnitureKind,
+  spec: { w: number; d: number; h: number },
+  color: string
+): React.ReactNode | null {
+  switch (kind) {
+    case "sofa": {
+      // Seat (lower main body) + back (taller slab along the +z edge).
+      const seatH = 1.4;
+      const backH = spec.h;
+      const backD = 0.5;
+      return (
+        <>
+          <mesh position={[0, seatH / 2, 0]} castShadow receiveShadow>
+            <boxGeometry args={[spec.w, seatH, spec.d]} />
+            <meshStandardMaterial color={color} roughness={0.85} />
+          </mesh>
+          <mesh
+            position={[0, backH / 2, spec.d / 2 - backD / 2]}
+            castShadow
+            receiveShadow
+          >
+            <boxGeometry args={[spec.w, backH, backD]} />
+            <meshStandardMaterial color={color} roughness={0.85} />
+          </mesh>
+        </>
+      );
+    }
+    case "armchair": {
+      const seatH = 1.4;
+      const backH = spec.h;
+      return (
+        <>
+          <mesh position={[0, seatH / 2, 0]} castShadow receiveShadow>
+            <boxGeometry args={[spec.w, seatH, spec.d]} />
+            <meshStandardMaterial color={color} roughness={0.85} />
+          </mesh>
+          <mesh
+            position={[0, backH / 2, spec.d / 2 - 0.25]}
+            castShadow
+            receiveShadow
+          >
+            <boxGeometry args={[spec.w, backH, 0.5]} />
+            <meshStandardMaterial color={color} roughness={0.85} />
+          </mesh>
+        </>
+      );
+    }
+    case "bed": {
+      // Mattress + duvet color + 2 pillows at the head (+z edge).
+      const mattressH = spec.h * 0.8;
+      const pillowW = spec.w * 0.42;
+      const pillowD = 1.2;
+      const pillowH = 0.4;
+      const headZ = spec.d / 2 - pillowD / 2 - 0.2;
+      return (
+        <>
+          <mesh position={[0, mattressH / 2, 0]} castShadow receiveShadow>
+            <boxGeometry args={[spec.w, mattressH, spec.d]} />
+            <meshStandardMaterial color="#cdb89a" roughness={0.8} />
+          </mesh>
+          <mesh
+            position={[0, mattressH + 0.05, 0]}
+            castShadow
+            receiveShadow
+          >
+            <boxGeometry args={[spec.w * 0.98, 0.1, spec.d * 0.98]} />
+            <meshStandardMaterial color={color} roughness={0.85} />
+          </mesh>
+          <mesh
+            position={[-spec.w * 0.22, mattressH + 0.25, headZ]}
+            castShadow
+          >
+            <boxGeometry args={[pillowW, pillowH, pillowD]} />
+            <meshStandardMaterial color="#fbf6ec" roughness={0.95} />
+          </mesh>
+          <mesh
+            position={[+spec.w * 0.22, mattressH + 0.25, headZ]}
+            castShadow
+          >
+            <boxGeometry args={[pillowW, pillowH, pillowD]} />
+            <meshStandardMaterial color="#fbf6ec" roughness={0.95} />
+          </mesh>
+        </>
+      );
+    }
+    case "toilet": {
+      // Bowl (front) + tank (back, taller).
+      const bowlD = spec.d * 0.55;
+      const tankD = spec.d * 0.4;
+      const bowlH = 1.4;
+      return (
+        <>
+          <mesh
+            position={[0, bowlH / 2, -spec.d / 2 + bowlD / 2]}
+            castShadow
+            receiveShadow
+          >
+            <boxGeometry args={[spec.w, bowlH, bowlD]} />
+            <meshStandardMaterial color={color} roughness={0.4} />
+          </mesh>
+          <mesh
+            position={[0, spec.h / 2, spec.d / 2 - tankD / 2]}
+            castShadow
+            receiveShadow
+          >
+            <boxGeometry args={[spec.w, spec.h, tankD]} />
+            <meshStandardMaterial color={color} roughness={0.4} />
+          </mesh>
+        </>
+      );
+    }
+    case "plant": {
+      // Pot + foliage sphere.
+      const potH = 1.2;
+      const folRadius = spec.w * 0.7;
+      return (
+        <>
+          <mesh position={[0, potH / 2, 0]} castShadow receiveShadow>
+            <cylinderGeometry args={[spec.w / 2, spec.w / 2 * 0.85, potH, 16]} />
+            <meshStandardMaterial color="#7a4a2e" roughness={0.8} />
+          </mesh>
+          <mesh position={[0, potH + folRadius * 0.7, 0]} castShadow>
+            <sphereGeometry args={[folRadius, 14, 10]} />
+            <meshStandardMaterial color={color} roughness={0.8} />
+          </mesh>
+        </>
+      );
+    }
+    case "lamp": {
+      // Thin pole + glowing top sphere.
+      return (
+        <>
+          <mesh position={[0, spec.h / 2, 0]} castShadow>
+            <cylinderGeometry args={[0.08, 0.12, spec.h, 8]} />
+            <meshStandardMaterial color={color} roughness={0.6} />
+          </mesh>
+          <mesh position={[0, spec.h - 0.4, 0]}>
+            <sphereGeometry args={[0.6, 12, 8]} />
+            <meshStandardMaterial
+              color="#fff4dc"
+              emissive="#fff4dc"
+              emissiveIntensity={0.6}
+              roughness={0.3}
+            />
+          </mesh>
+        </>
+      );
+    }
+    case "office_chair":
+    case "dining_chair": {
+      // Seat + slim back.
+      const seatH = 1.5;
+      return (
+        <>
+          <mesh position={[0, seatH / 2, 0]} castShadow receiveShadow>
+            <boxGeometry args={[spec.w, seatH, spec.d]} />
+            <meshStandardMaterial color={color} roughness={0.7} />
+          </mesh>
+          <mesh
+            position={[0, spec.h / 2 + seatH / 2, spec.d / 2 - 0.15]}
+            castShadow
+          >
+            <boxGeometry args={[spec.w * 0.9, spec.h - seatH, 0.3]} />
+            <meshStandardMaterial color={color} roughness={0.7} />
+          </mesh>
+        </>
+      );
+    }
+    case "tv_stand": {
+      // Console + thin black TV slab on top.
+      return (
+        <>
+          <mesh position={[0, spec.h / 2, 0]} castShadow receiveShadow>
+            <boxGeometry args={[spec.w, spec.h, spec.d]} />
+            <meshStandardMaterial color={color} roughness={0.6} />
+          </mesh>
+          <mesh
+            position={[0, spec.h + 1.6, -spec.d / 2 + 0.15]}
+            castShadow
+          >
+            <boxGeometry args={[spec.w * 0.9, 2.4, 0.2]} />
+            <meshStandardMaterial color="#0a0a0d" roughness={0.4} />
+          </mesh>
+        </>
+      );
+    }
+    default:
+      return null;
+  }
+}
+
+// Wall geometry. Walls run between rooms and stop short of full story height
+// so the lifted upper mass can show the cutaway clearly. A 3ft door opening
+// is cut from any wall segment between two rooms (auto-derived shared edge).
+const WALL_HEIGHT_FT = 9;
+const WALL_THICKNESS_FT = 0.4;
+const DOOR_WIDTH_FT = 3;
+const DOOR_HEIGHT_FT = 7;
+const WALL_COLOR = "#f0e9da";
+const WALL_TRIM_COLOR = "#d8ceb8";
+
+type WallSeg = {
+  // World-axis aligned. axis === "x" means the wall runs along x (its long
+  // dimension is x-aligned, normal points in z). "z" is the opposite.
+  axis: "x" | "z";
+  // Center of the wall segment in building-local coordinates.
+  cx: number;
+  cz: number;
+  // Wall length along its long axis.
+  length: number;
+  // True if a door opening should be cut at the segment's midpoint.
+  hasDoor: boolean;
+};
+
+// Auto-derive interior walls from the room rectangles. For every pair of
+// rooms that share an edge segment (same x or z line, with overlap on the
+// perpendicular axis), produce a wall along the overlap and stamp a door
+// in the middle. This keeps the LLM contract narrow (it just lays out
+// rectangles) while the renderer handles the geometry.
+function deriveWalls(
+  rooms: Room[],
+  buildingW: number,
+  buildingD: number
+): WallSeg[] {
+  const walls: WallSeg[] = [];
+  const eps = 0.5;
+  for (let i = 0; i < rooms.length; i++) {
+    for (let j = i + 1; j < rooms.length; j++) {
+      const a = rooms[i];
+      const b = rooms[j];
+      // Vertical shared edge (constant x, runs along z): a's east face meets b's west face (or vice versa).
+      if (Math.abs(a.x + a.w - b.x) < eps || Math.abs(b.x + b.w - a.x) < eps) {
+        const sharedX = Math.abs(a.x + a.w - b.x) < eps ? a.x + a.w : b.x + b.w;
+        const z0 = Math.max(a.z, b.z);
+        const z1 = Math.min(a.z + a.d, b.z + b.d);
+        if (z1 - z0 > 1) {
+          walls.push({
+            axis: "z",
+            cx: sharedX,
+            cz: (z0 + z1) / 2,
+            length: z1 - z0,
+            hasDoor: z1 - z0 >= DOOR_WIDTH_FT + 1,
+          });
+        }
+      }
+      // Horizontal shared edge (constant z, runs along x).
+      if (Math.abs(a.z + a.d - b.z) < eps || Math.abs(b.z + b.d - a.z) < eps) {
+        const sharedZ = Math.abs(a.z + a.d - b.z) < eps ? a.z + a.d : b.z + b.d;
+        const x0 = Math.max(a.x, b.x);
+        const x1 = Math.min(a.x + a.w, b.x + b.w);
+        if (x1 - x0 > 1) {
+          walls.push({
+            axis: "x",
+            cx: (x0 + x1) / 2,
+            cz: sharedZ,
+            length: x1 - x0,
+            hasDoor: x1 - x0 >= DOOR_WIDTH_FT + 1,
+          });
+        }
+      }
+    }
+  }
+
+  // Also draw walls along room edges that face open void inside the building
+  // (i.e. the LLM left a gap between rooms instead of tiling). Treat any
+  // room-edge segment that's NOT on the building exterior AND NOT shared
+  // with another room as a wall facing the void. For the demo scope we keep
+  // this simple: just check each of the 4 edges of each room for the
+  // exterior-vs-shared cases. Anything else gets a wall, no door.
+  for (const r of rooms) {
+    // North edge (z = r.z + r.d), runs along x.
+    addEdgeIfFacingVoid(r, "north", rooms, walls, buildingW, buildingD);
+    addEdgeIfFacingVoid(r, "south", rooms, walls, buildingW, buildingD);
+    addEdgeIfFacingVoid(r, "east", rooms, walls, buildingW, buildingD);
+    addEdgeIfFacingVoid(r, "west", rooms, walls, buildingW, buildingD);
+  }
+
+  return walls;
+}
+
+function addEdgeIfFacingVoid(
+  r: Room,
+  side: "north" | "south" | "east" | "west",
+  rooms: Room[],
+  walls: WallSeg[],
+  bw: number,
+  bd: number
+) {
+  const eps = 0.5;
+  if (side === "north" || side === "south") {
+    const z = side === "north" ? r.z + r.d : r.z;
+    // On building exterior — exterior wall already drawn by the building shell.
+    if (z < eps || z > bd - eps) return;
+    // Find x-overlap with neighbors on the same z-line.
+    const segs: Array<[number, number]> = [[r.x, r.x + r.w]];
+    for (const o of rooms) {
+      if (o === r) continue;
+      const oZ = side === "north" ? o.z : o.z + o.d;
+      if (Math.abs(oZ - z) > eps) continue;
+      const ox0 = o.x;
+      const ox1 = o.x + o.w;
+      // Subtract overlap from segs.
+      const next: Array<[number, number]> = [];
+      for (const [a, b] of segs) {
+        if (ox1 <= a || ox0 >= b) {
+          next.push([a, b]);
+          continue;
+        }
+        if (ox0 > a) next.push([a, ox0]);
+        if (ox1 < b) next.push([ox1, b]);
+      }
+      segs.length = 0;
+      segs.push(...next);
+    }
+    for (const [a, b] of segs) {
+      if (b - a < 1) continue;
+      walls.push({
+        axis: "x",
+        cx: (a + b) / 2,
+        cz: z,
+        length: b - a,
+        hasDoor: false,
+      });
+    }
+  } else {
+    const x = side === "east" ? r.x + r.w : r.x;
+    if (x < eps || x > bw - eps) return;
+    const segs: Array<[number, number]> = [[r.z, r.z + r.d]];
+    for (const o of rooms) {
+      if (o === r) continue;
+      const oX = side === "east" ? o.x : o.x + o.w;
+      if (Math.abs(oX - x) > eps) continue;
+      const oz0 = o.z;
+      const oz1 = o.z + o.d;
+      const next: Array<[number, number]> = [];
+      for (const [a, b] of segs) {
+        if (oz1 <= a || oz0 >= b) {
+          next.push([a, b]);
+          continue;
+        }
+        if (oz0 > a) next.push([a, oz0]);
+        if (oz1 < b) next.push([oz1, b]);
+      }
+      segs.length = 0;
+      segs.push(...next);
+    }
+    for (const [a, b] of segs) {
+      if (b - a < 1) continue;
+      walls.push({
+        axis: "z",
+        cx: x,
+        cz: (a + b) / 2,
+        length: b - a,
+        hasDoor: false,
+      });
+    }
+  }
+}
+
+function WallSegment({ wall }: { wall: WallSeg }) {
+  // For walls without doors, render one solid box.
+  // For walls with doors, split into two segments leaving a 3ft gap centered.
+  const longAxisLen = wall.length;
+  const door = wall.hasDoor ? DOOR_WIDTH_FT : 0;
+  const sideLen = (longAxisLen - door) / 2;
+
+  const segs: Array<{
+    cx: number;
+    cz: number;
+    sizeX: number;
+    sizeZ: number;
+  }> = [];
+
+  if (!wall.hasDoor || sideLen <= 0) {
+    if (wall.axis === "x") {
+      segs.push({ cx: wall.cx, cz: wall.cz, sizeX: longAxisLen, sizeZ: WALL_THICKNESS_FT });
+    } else {
+      segs.push({ cx: wall.cx, cz: wall.cz, sizeX: WALL_THICKNESS_FT, sizeZ: longAxisLen });
+    }
+  } else if (wall.axis === "x") {
+    segs.push({
+      cx: wall.cx - door / 2 - sideLen / 2,
+      cz: wall.cz,
+      sizeX: sideLen,
+      sizeZ: WALL_THICKNESS_FT,
+    });
+    segs.push({
+      cx: wall.cx + door / 2 + sideLen / 2,
+      cz: wall.cz,
+      sizeX: sideLen,
+      sizeZ: WALL_THICKNESS_FT,
+    });
+    // Header (above the door opening) so the wall reads as a doorway, not a gap.
+    segs.push({
+      cx: wall.cx,
+      cz: wall.cz,
+      sizeX: door,
+      sizeZ: WALL_THICKNESS_FT,
+    });
+  } else {
+    segs.push({
+      cx: wall.cx,
+      cz: wall.cz - door / 2 - sideLen / 2,
+      sizeX: WALL_THICKNESS_FT,
+      sizeZ: sideLen,
+    });
+    segs.push({
+      cx: wall.cx,
+      cz: wall.cz + door / 2 + sideLen / 2,
+      sizeX: WALL_THICKNESS_FT,
+      sizeZ: sideLen,
+    });
+    segs.push({
+      cx: wall.cx,
+      cz: wall.cz,
+      sizeX: WALL_THICKNESS_FT,
+      sizeZ: door,
+    });
+  }
+
+  return (
+    <>
+      {segs.map((s, i) => {
+        // The third segment (when it exists) is the door header — render
+        // shorter and starting above the door height.
+        const isHeader = wall.hasDoor && i === 2;
+        const h = isHeader ? WALL_HEIGHT_FT - DOOR_HEIGHT_FT : WALL_HEIGHT_FT;
+        const yCenter = isHeader
+          ? DOOR_HEIGHT_FT + h / 2
+          : h / 2;
+        return (
+          <mesh
+            key={`wseg-${i}`}
+            position={[s.cx, yCenter, s.cz]}
+            castShadow
+            receiveShadow
+          >
+            <boxGeometry args={[s.sizeX, h, s.sizeZ]} />
+            <meshStandardMaterial
+              color={WALL_COLOR}
+              roughness={0.85}
+              metalness={0}
+            />
+          </mesh>
+        );
+      })}
+    </>
+  );
+}
+
+function RoomFloor({ room }: { room: Room }) {
+  const cx = room.x + room.w / 2;
+  const cz = room.z + room.d / 2;
+  const color = FLOOR_COLORS[room.floor] ?? "#dcd0b8";
+  return (
+    <group position={[cx, 0, cz]}>
+      <mesh
+        position={[0, 0.05, 0]}
+        rotation={[-Math.PI / 2, 0, 0]}
+        receiveShadow
+      >
+        <planeGeometry args={[room.w - 0.05, room.d - 0.05]} />
+        <meshStandardMaterial
+          color={color}
+          roughness={0.65}
+          metalness={0}
+        />
+      </mesh>
+      {/* Thin trim strip around the room perimeter — adds the architectural
+          "baseboard" read so floor patches don't look like flat color blocks. */}
+      <mesh position={[0, 0.06, -room.d / 2 + 0.08]}>
+        <boxGeometry args={[room.w, 0.12, 0.08]} />
+        <meshBasicMaterial color={WALL_TRIM_COLOR} toneMapped={false} />
+      </mesh>
+      <mesh position={[0, 0.06, room.d / 2 - 0.08]}>
+        <boxGeometry args={[room.w, 0.12, 0.08]} />
+        <meshBasicMaterial color={WALL_TRIM_COLOR} toneMapped={false} />
+      </mesh>
+      <mesh position={[-room.w / 2 + 0.08, 0.06, 0]}>
+        <boxGeometry args={[0.08, 0.12, room.d]} />
+        <meshBasicMaterial color={WALL_TRIM_COLOR} toneMapped={false} />
+      </mesh>
+      <mesh position={[room.w / 2 - 0.08, 0.06, 0]}>
+        <boxGeometry args={[0.08, 0.12, room.d]} />
+        <meshBasicMaterial color={WALL_TRIM_COLOR} toneMapped={false} />
+      </mesh>
+    </group>
+  );
+}
+
+function InteriorScene({
+  rooms,
+  furniture,
+  buildingW,
+  buildingD,
+  groupRef,
+}: {
+  rooms: Room[];
+  furniture: FurnitureItem[];
+  buildingW: number;
+  buildingD: number;
+  groupRef: React.RefObject<THREE.Group | null>;
+}) {
+  const walls = useMemo(
+    () => deriveWalls(rooms, buildingW, buildingD),
+    [rooms, buildingW, buildingD]
+  );
+  // All rooms are positioned in building-local coords (front-left origin), so
+  // the InteriorScene group is shifted to the building's center-relative frame.
+  const offset: [number, number, number] = [-buildingW / 2, 0, -buildingD / 2];
+
+  return (
+    <group ref={groupRef} scale={[1, 0.0001, 1]} position={offset}>
+      {rooms.map((r, i) => (
+        <RoomFloor key={`room-${i}-${r.name}`} room={r} />
+      ))}
+      {walls.map((w, i) => (
+        <WallSegment key={`wall-${i}-${w.axis}-${w.cx.toFixed(1)}-${w.cz.toFixed(1)}`} wall={w} />
+      ))}
+      {furniture.map((item, i) => (
+        <FurnitureItemMesh
+          key={`f-${item.kind}-${i}-${item.x.toFixed(1)}-${item.z.toFixed(1)}`}
+          item={item}
+        />
+      ))}
+    </group>
+  );
+}
+
 function DefaultBuilding({
   building,
+  buildingIndex,
   siblings,
   valid,
   accent,
@@ -1422,6 +2912,70 @@ function DefaultBuilding({
   // Anchor at the base so growth scales upward from the lot, not the center.
   const ref = useGrowUp<THREE.Group>(0.75, delay);
   const preset = presetFor(building.material);
+
+  // ── Floor reveal: when a story of THIS building is selected, the body is
+  // split at that story's floor line and everything from the selected story
+  // up lifts away to expose the nano-banana floor plan on the cut surface.
+  // ──
+  const selectedFloor = useStore((s) => s.selectedFloor);
+  const isSelected = selectedFloor?.buildingIndex === buildingIndex;
+  const selectedStory = isSelected ? selectedFloor!.storyIndex : null;
+  // Linger after deselection so the lower-down animation can play out before
+  // we collapse back to the unsplit single-mass body.
+  const [activeSplit, setActiveSplit] = useState<number | null>(null);
+  useEffect(() => {
+    if (selectedStory !== null) {
+      setActiveSplit(selectedStory);
+      return;
+    }
+    const t = setTimeout(() => setActiveSplit(null), 700);
+    return () => clearTimeout(t);
+  }, [selectedStory]);
+
+  const upperRef = useRef<THREE.Group>(null);
+  const liftValRef = useRef(0);
+  const interiorGroupRef = useRef<THREE.Group | null>(null);
+
+  const interiors = useStore((s) => s.interiors);
+  const interiorRecord =
+    activeSplit !== null
+      ? interiors[
+          interiorCacheKey({
+            w: Math.round(building.w),
+            d: Math.round(building.d),
+            stories: building.stories,
+            storyIndex: activeSplit,
+            structureType: building.structure_type ?? "office",
+            material: building.material ?? "concrete",
+          })
+        ]
+      : undefined;
+
+  useFrame((_, dt) => {
+    const target = selectedStory !== null ? STORY_LIFT_FT : 0;
+    const k = Math.min(1, dt * 4.5);
+    liftValRef.current += (target - liftValRef.current) * k;
+    if (upperRef.current) upperRef.current.position.y = liftValRef.current;
+    // Interior scene grows out of the floor as the lift progresses, so the
+    // floor populates beneath the rising upper mass instead of popping in
+    // suddenly. Hide immediately on deselect so the descending upper mass
+    // doesn't pass through the full-height walls / furniture.
+    if (interiorGroupRef.current) {
+      const liftProgress = liftValRef.current / STORY_LIFT_FT;
+      const target =
+        selectedStory !== null ? Math.min(1, Math.max(0, liftProgress)) : 0;
+      const cur = interiorGroupRef.current.scale.y;
+      const next = cur + (target - cur) * Math.min(1, dt * 6);
+      interiorGroupRef.current.scale.y = Math.max(0.0001, next);
+    }
+  });
+
+  const split = activeSplit;
+  const lowerH = split !== null ? split * STORY_HEIGHT_FT : 0;
+  const upperH = split !== null ? height - lowerH : height;
+  // Plinth top sits ~0.7ft up; clear it for the ground-floor case so the
+  // plane doesn't z-fight with the trim.
+  const planeY = split !== null ? Math.max(lowerH, 0.78) + 0.04 : 0;
 
   // Where this building shares a face with another same-material/same-stories
   // neighbor (i.e. an L-shape decomposed into two boxes), suppress the windows
@@ -1488,21 +3042,27 @@ function DefaultBuilding({
           metalness={preset.metalness * 0.4}
         />
       </mesh>
-      <mesh position={[0, height / 2, 0]} castShadow receiveShadow>
-        <boxGeometry args={[building.w, height, building.d]} />
-        <meshStandardMaterial
-          color={bodyColor}
-          roughness={preset.roughness}
-          metalness={preset.metalness}
-        />
-        <Edges color={edgeColor} lineWidth={1.0} threshold={20} />
-      </mesh>
 
-      {/* Windows — per story per face. Skipped for invalid (red) buildings. */}
+      {/* Lower mass — only the portion below the cut. With no selection the
+          full body lives in the upper group as one unsplit volume. */}
+      {split !== null && split > 0 && (
+        <mesh position={[0, lowerH / 2, 0]} castShadow receiveShadow>
+          <boxGeometry args={[building.w, lowerH, building.d]} />
+          <meshStandardMaterial
+            color={bodyColor}
+            roughness={preset.roughness}
+            metalness={preset.metalness}
+          />
+          <Edges color={edgeColor} lineWidth={1.0} threshold={20} />
+        </mesh>
+      )}
+
+      {/* Lower-mass windows */}
       {valid &&
-        Array.from({ length: building.stories }).map((_, i) => (
+        split !== null &&
+        Array.from({ length: split }).map((_, i) => (
           <StoryWindows
-            key={`win-${i}`}
+            key={`win-low-${i}`}
             storyIndex={i}
             w={building.w}
             d={building.d}
@@ -1512,31 +3072,28 @@ function DefaultBuilding({
           />
         ))}
 
-      {/* Floor-line cornice — wraps the building at each story boundary. A
-          chunky belt course (0.25ft tall, projecting 0.15ft) reads at any
-          zoom and matches real architectural trim, instead of the previous
-          0.06 × 0.04 hairline that turned into shimmer at distance. */}
-      {Array.from({ length: Math.max(0, building.stories - 1) }).map((_, i) => {
-        const y = (i + 1) * STORY_HEIGHT_FT - 0.125;
-        return (
-          <mesh
-            key={`fl-${i}`}
-            position={[0, y, 0]}
-            castShadow
-            receiveShadow
-          >
-            <boxGeometry args={[building.w + 0.3, 0.25, building.d + 0.3]} />
-            <meshStandardMaterial
-              color={preset.floorLine}
-              roughness={0.55}
-              metalness={preset.metalness * 0.4}
-            />
-          </mesh>
-        );
-      })}
+      {/* Lower-mass cornices */}
+      {split !== null &&
+        Array.from({ length: Math.max(0, split - 1) }).map((_, i) => {
+          const y = (i + 1) * STORY_HEIGHT_FT - 0.125;
+          return (
+            <mesh
+              key={`fl-low-${i}`}
+              position={[0, y, 0]}
+              castShadow
+              receiveShadow
+            >
+              <boxGeometry args={[building.w + 0.3, 0.25, building.d + 0.3]} />
+              <meshStandardMaterial
+                color={preset.floorLine}
+                roughness={0.55}
+                metalness={preset.metalness * 0.4}
+              />
+            </mesh>
+          );
+        })}
 
-      {/* Front entrance — multi-layer real door on the south face. Skipped
-          if the door's footprint is occluded by a flush sibling building. */}
+      {/* Front entrance — anchored to ground; doesn't ride the lift. */}
       {valid && (
         <FrontDoor
           d={building.d}
@@ -1546,46 +3103,152 @@ function DefaultBuilding({
         />
       )}
 
-      {/* Roof — gable for low-rise residential, flat parapet otherwise.
-          Gables look absurd on tall buildings, so anything above 2 stories
-          forces a flat roof regardless of material preset. */}
-      {preset.roofStyle === "gable" && valid && building.stories <= 2 ? (
-        <GableRoof
-          w={building.w}
-          d={building.d}
-          baseY={height}
-          color={roofColor}
-          edge={edgeColor}
-          roughness={Math.min(0.95, preset.roughness + 0.05)}
-        />
-      ) : (
-        <>
-          {/* Flat parapet cap */}
-          <mesh position={[0, height + 0.4, 0]} castShadow>
-            <boxGeometry args={[building.w + 0.3, 0.8, building.d + 0.3]} />
-            <meshStandardMaterial
-              color={roofColor}
-              roughness={preset.roughness}
-              metalness={preset.metalness * 0.6}
-            />
-          </mesh>
-          {/* Accent stripe across parapet top — keeps the brand color present on commercial blocks */}
-          <mesh position={[0, height + 0.85, 0]}>
-            <boxGeometry args={[building.w + 0.34, 0.15, building.d + 0.34]} />
-            <meshStandardMaterial
-              color={valid ? accent : COLORS.buildingInvalid}
-              emissive={valid ? accent : COLORS.buildingInvalid}
-              emissiveIntensity={valid ? 0.45 : 0.2}
-              roughness={0.4}
-              metalness={0.1}
-            />
-          </mesh>
-          {/* Rooftop HVAC — placed on flat roofs only. Count scales with footprint. */}
-          {valid && (
-            <RooftopHVAC w={building.w} d={building.d} baseY={height + 0.95} />
+      {/* Floor plan reveal — sits on the cut surface, fades in as the upper
+          mass lifts away. Plate is a paper-toned base that the nano-banana
+          line drawing replaces once the texture arrives. Thin accent outline
+          frames the footprint. Loading is invisible by design — prefetch
+          starts the moment the plan settles, so the texture is usually
+          already in cache by the time the user clicks. */}
+      {split !== null && (
+        <group position={[0, planeY, 0]}>
+          {/* Real 3D interior — colored room floors, auto-derived walls
+              with door cutouts between adjacent rooms, and furniture inside
+              each room. The whole scene grows up out of the cut surface as
+              the upper mass lifts. */}
+          {selectedStory !== null &&
+            interiorRecord?.status === "ready" &&
+            interiorRecord.rooms &&
+            interiorRecord.furniture && (
+              <InteriorScene
+                rooms={interiorRecord.rooms}
+                furniture={interiorRecord.furniture}
+                buildingW={building.w}
+                buildingD={building.d}
+                groupRef={interiorGroupRef}
+              />
+            )}
+
+          {interiorRecord?.status === "error" && (
+            <Html position={[0, 0.5, 0]} center>
+              <div className="pointer-events-none whitespace-nowrap rounded bg-paper/95 px-2 py-1 font-mono text-[10px] uppercase tracking-[0.2em] text-rose-700 shadow-sm">
+                interior generation failed
+              </div>
+            </Html>
           )}
-        </>
+        </group>
       )}
+
+      {/* ─── Upper group — lifts when a floor is selected. Holds the body
+          (or its upper portion when split), windows above the cut, upper
+          cornices, and the roof. ─── */}
+      <group ref={upperRef}>
+        {split === null ? (
+          <mesh position={[0, height / 2, 0]} castShadow receiveShadow>
+            <boxGeometry args={[building.w, height, building.d]} />
+            <meshStandardMaterial
+              color={bodyColor}
+              roughness={preset.roughness}
+              metalness={preset.metalness}
+            />
+            <Edges color={edgeColor} lineWidth={1.0} threshold={20} />
+          </mesh>
+        ) : (
+          <mesh
+            position={[0, lowerH + upperH / 2, 0]}
+            castShadow
+            receiveShadow
+          >
+            <boxGeometry args={[building.w, upperH, building.d]} />
+            <meshStandardMaterial
+              color={bodyColor}
+              roughness={preset.roughness}
+              metalness={preset.metalness}
+            />
+            <Edges color={edgeColor} lineWidth={1.0} threshold={20} />
+          </mesh>
+        )}
+
+        {/* Upper-mass windows — story i where i >= split (or all if no split) */}
+        {valid &&
+          Array.from({ length: building.stories }).map((_, i) => {
+            if (split !== null && i < split) return null;
+            return (
+              <StoryWindows
+                key={`win-up-${i}`}
+                storyIndex={i}
+                w={building.w}
+                d={building.d}
+                accent={accent}
+                preset={preset}
+                occluded={occluded}
+              />
+            );
+          })}
+
+        {/* Upper-mass cornices — cornice i is between story i and i+1; goes
+            with upper when i >= split - 1. */}
+        {Array.from({ length: Math.max(0, building.stories - 1) }).map(
+          (_, i) => {
+            if (split !== null && i < split - 1) return null;
+            const y = (i + 1) * STORY_HEIGHT_FT - 0.125;
+            return (
+              <mesh
+                key={`fl-up-${i}`}
+                position={[0, y, 0]}
+                castShadow
+                receiveShadow
+              >
+                <boxGeometry
+                  args={[building.w + 0.3, 0.25, building.d + 0.3]}
+                />
+                <meshStandardMaterial
+                  color={preset.floorLine}
+                  roughness={0.55}
+                  metalness={preset.metalness * 0.4}
+                />
+              </mesh>
+            );
+          }
+        )}
+
+        {/* Roof — gable for low-rise residential, flat parapet otherwise. */}
+        {preset.roofStyle === "gable" && valid && building.stories <= 2 ? (
+          <GableRoof
+            w={building.w}
+            d={building.d}
+            baseY={height}
+            color={roofColor}
+            edge={edgeColor}
+            roughness={Math.min(0.95, preset.roughness + 0.05)}
+          />
+        ) : (
+          <>
+            <mesh position={[0, height + 0.4, 0]} castShadow>
+              <boxGeometry args={[building.w + 0.3, 0.8, building.d + 0.3]} />
+              <meshStandardMaterial
+                color={roofColor}
+                roughness={preset.roughness}
+                metalness={preset.metalness * 0.6}
+              />
+            </mesh>
+            <mesh position={[0, height + 0.85, 0]}>
+              <boxGeometry
+                args={[building.w + 0.34, 0.15, building.d + 0.34]}
+              />
+              <meshStandardMaterial
+                color={valid ? accent : COLORS.buildingInvalid}
+                emissive={valid ? accent : COLORS.buildingInvalid}
+                emissiveIntensity={valid ? 0.45 : 0.2}
+                roughness={0.4}
+                metalness={0.1}
+              />
+            </mesh>
+            {valid && (
+              <RooftopHVAC w={building.w} d={building.d} baseY={height + 0.95} />
+            )}
+          </>
+        )}
+      </group>
 
       <Html position={[0, height + 6, 0]} center>
         <div className="whitespace-nowrap rounded bg-paper px-2 py-1 font-mono text-[10px] uppercase tracking-wider text-ink shadow-md">
@@ -1875,6 +3538,121 @@ function MapleTree({ height }: { height: number }) {
         <sphereGeometry args={[canopyR * 0.6, 8, 6]} />
         <meshStandardMaterial color={TREE_COLORS.mapleLeafShadow} roughness={0.85} />
       </mesh>
+    </group>
+  );
+}
+
+// ----- Bushes ---------------------------------------------------------------
+
+const BUSH_PALETTE = {
+  boxwood: { primary: "#3f6840", shadow: "#2c4a2d" },
+  hedge_round: { primary: "#4a7548", shadow: "#345134" },
+  flowering: {
+    primary: "#5b8a4d",
+    shadow: "#3d6234",
+    flower: ["#d76b8a", "#e8a55c", "#e2d56a"],
+  },
+};
+
+function BushMesh({ bush, delay = 0 }: { bush: Bush; delay?: number }) {
+  const ref = useRef<THREE.Group>(null);
+  const t = useRef(0);
+  const elapsed = useRef(0);
+
+  useFrame((_, dt) => {
+    const m = ref.current;
+    if (!m) return;
+    elapsed.current += dt;
+    if (elapsed.current < delay) {
+      m.scale.set(0.0001, 0.0001, 0.0001);
+      return;
+    }
+    if (t.current >= 1) return;
+    t.current = Math.min(1, t.current + dt / 0.4);
+    const e = 1 - Math.pow(1 - t.current, 3);
+    const s = Math.max(0.0001, e);
+    m.scale.set(s, s, s);
+  });
+
+  // Stable jitter so the same bush always looks identical between renders.
+  const seed = stallHash(Math.round(bush.x * 11 + bush.z * 17));
+  const yaw = seed * Math.PI * 2;
+  const sizeJitter = 0.92 + seed * 0.16;
+
+  const r = (bush.size / 2) * sizeJitter;
+  const variety = bush.variety;
+  const palette = BUSH_PALETTE[variety];
+
+  return (
+    <group ref={ref} position={[bush.x, 0, bush.z]} rotation={[0, yaw, 0]}>
+      {variety === "boxwood" && (
+        // Tighter, more formal: a low rounded rectangle with subtle clumps.
+        <group>
+          <mesh position={[0, r * 0.55, 0]} castShadow>
+            <boxGeometry args={[r * 1.7, r * 1.1, r * 1.7]} />
+            <meshStandardMaterial color={palette.primary} roughness={0.85} />
+          </mesh>
+          <mesh position={[r * 0.3, r * 0.85, r * 0.2]} castShadow>
+            <sphereGeometry args={[r * 0.5, 8, 6]} />
+            <meshStandardMaterial color={palette.shadow} roughness={0.9} />
+          </mesh>
+          <mesh position={[-r * 0.4, r * 0.8, -r * 0.15]} castShadow>
+            <sphereGeometry args={[r * 0.45, 8, 6]} />
+            <meshStandardMaterial color={palette.primary} roughness={0.85} />
+          </mesh>
+        </group>
+      )}
+      {variety === "hedge_round" && (
+        // Big rounded mound made of overlapping spheres.
+        <group>
+          <mesh position={[0, r * 0.7, 0]} castShadow>
+            <sphereGeometry args={[r, 12, 8]} />
+            <meshStandardMaterial color={palette.primary} roughness={0.88} />
+          </mesh>
+          <mesh position={[r * 0.45, r * 0.55, r * 0.3]} castShadow>
+            <sphereGeometry args={[r * 0.65, 8, 6]} />
+            <meshStandardMaterial color={palette.shadow} roughness={0.9} />
+          </mesh>
+          <mesh position={[-r * 0.4, r * 0.6, -r * 0.35]} castShadow>
+            <sphereGeometry args={[r * 0.6, 8, 6]} />
+            <meshStandardMaterial color={palette.primary} roughness={0.88} />
+          </mesh>
+        </group>
+      )}
+      {variety === "flowering" && (
+        // Greenery + a few colorful flower puffs on top.
+        <group>
+          <mesh position={[0, r * 0.65, 0]} castShadow>
+            <sphereGeometry args={[r * 0.95, 10, 8]} />
+            <meshStandardMaterial color={palette.primary} roughness={0.88} />
+          </mesh>
+          <mesh position={[r * 0.35, r * 0.55, r * 0.25]} castShadow>
+            <sphereGeometry args={[r * 0.55, 8, 6]} />
+            <meshStandardMaterial color={palette.shadow} roughness={0.9} />
+          </mesh>
+          {/* Flowers — three small bright puffs across the top */}
+          {BUSH_PALETTE.flowering.flower.map((c, i) => {
+            const a = (i / 3) * Math.PI * 2 + seed * 5;
+            const fx = Math.cos(a) * r * 0.55;
+            const fz = Math.sin(a) * r * 0.55;
+            return (
+              <mesh
+                key={`fl-${i}`}
+                position={[fx, r * 1.0, fz]}
+                castShadow
+              >
+                <sphereGeometry args={[r * 0.18, 6, 5]} />
+                <meshStandardMaterial
+                  color={c}
+                  emissive={c}
+                  emissiveIntensity={0.18}
+                  roughness={0.7}
+                />
+              </mesh>
+            );
+          })}
+        </group>
+      )}
     </group>
   );
 }
@@ -2211,4 +3989,3 @@ function SetbackWarning({ lot }: { lot: SitePlan["lot"] }) {
     </Html>
   );
 }
-

@@ -1,6 +1,7 @@
 import { Type, type FunctionDeclaration } from "@google/genai";
 import {
   BUILDING_MATERIALS,
+  BUSH_VARIETIES,
   FENCE_STYLES,
   STREET_PROPS,
   STRUCTURE_TYPES,
@@ -149,7 +150,7 @@ export const TOOL_DECLARATIONS: FunctionDeclaration[] = [
   {
     name: "place_street_furniture",
     description:
-      "Place a single piece of street furniture (bench, trash can, mailbox, fire hydrant, planter, bus stop, stop sign, dumpster) at a specific point on the lot. Call multiple times for multiple items. ONLY call if the user mentions one of these things — never add unprompted. Place at sensible positions: trash cans / dumpsters near building back or side, benches along walkways or front, fire hydrants in the front setback near street edge, mailboxes at the lot front, bus stops at the front edge, planters flanking entrances, stop signs at lot corners.",
+      "Place a piece of street furniture. PLACEMENT IS DETERMINISTIC — the system picks coordinates from each kind's designated zone (benches → front sidewalk; trash cans / dumpsters → behind buildings; fire hydrants → front setback strip near street; mailboxes → front lot edge; bus stops → front-corner sidewalk; stop signs → front lot corners; planters → flanking building entrances). You ONLY pick the kind; the system positions it correctly, snaps to a 2.5ft grid, and rejects the call if the kind's zone is full or blocked. Call once per item; ONLY when the user explicitly mentions that item. For 'two planters at the door' call place_street_furniture twice with kind='planter' — the system handles the pairing.",
     parameters: {
       type: Type.OBJECT,
       properties: {
@@ -158,21 +159,40 @@ export const TOOL_DECLARATIONS: FunctionDeclaration[] = [
           enum: [...STREET_PROPS],
           description: `What to place. One of: ${STREET_PROPS.join(", ")}.`,
         },
-        x: {
-          type: Type.NUMBER,
-          description: "Lot-coordinate X in feet (0..lot.width).",
+      },
+      required: ["kind"],
+    },
+  },
+  {
+    name: "place_bushes",
+    description:
+      "Plant ground-level shrubs / hedges (different from trees — no trunk, sit on the lawn). Auto-avoids buildings, parking, walkways, trees, and fenced sides. Use to dress the entrance, ring building bases, or scatter low greenery. Call only if the user mentions bushes, shrubs, hedges (other than perimeter), or 'foundation planting'.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        count: {
+          type: Type.INTEGER,
+          description:
+            "TOTAL bushes to attempt to place (split across all targets). For 'around_buildings' the count is divided fairly across every building — pass roughly 6-10 PER BUILDING (e.g. 4 houses → count=32, 2 houses → count=16). For 'front', 5-10 is plenty. For 'scattered', 8-16.",
         },
-        z: {
-          type: Type.NUMBER,
-          description: "Lot-coordinate Z in feet (0..lot.depth).",
+        placement: {
+          type: Type.STRING,
+          enum: ["around_buildings", "front", "scattered"],
+          description:
+            "Where to plant. 'around_buildings' rings each building footprint with bushes (most common — foundation planting; budget ~6-10 per building). 'front' lays a single line along the lot's front. 'scattered' spreads them pseudo-randomly.",
         },
-        yaw: {
+        variety: {
+          type: Type.STRING,
+          enum: [...BUSH_VARIETIES],
+          description: `Bush variety. One of: ${BUSH_VARIETIES.join(", ")}. 'boxwood' = formal trim hedge; 'hedge_round' = larger rounded shrub; 'flowering' = colorful flowering bush.`,
+        },
+        size: {
           type: Type.NUMBER,
           description:
-            "Optional Y-axis rotation in DEGREES (default 0). Use 90/180/270 for cardinal facings — e.g. yaw=180 for a bench facing the street.",
+            "Optional override for canopy diameter in feet. Defaults: boxwood 3.5, hedge_round 4.5, flowering 3.0.",
         },
       },
-      required: ["kind", "x", "z"],
+      required: ["count", "placement", "variety"],
     },
   },
   {

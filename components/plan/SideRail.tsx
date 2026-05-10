@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useStore } from "@/lib/store";
 import Step from "./Step";
 import AccentPicker from "@/components/AccentPicker";
+import CompartmentFire from "./CompartmentFire";
 
 export default function SideRail() {
   const { prompt, steps, running } = useStore();
@@ -28,7 +29,12 @@ export default function SideRail() {
         </div>
       </div>
 
-      <div className="h-[400px] border-b border-rule/60" />
+      <div
+        id="hammer-slot"
+        className="relative h-[400px] border-b border-rule/60"
+      >
+        <CompartmentFire />
+      </div>
 
       <div className="px-6 py-4 border-b border-rule/60">
         <div className="text-[10px] uppercase tracking-[0.2em] text-mute font-mono">

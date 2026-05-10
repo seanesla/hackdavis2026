@@ -62,6 +62,17 @@ export type Fence = {
   style: FenceStyle;
 };
 
+export const BUSH_VARIETIES = ["boxwood", "hedge_round", "flowering"] as const;
+export type BushVariety = (typeof BUSH_VARIETIES)[number];
+export type Bush = {
+  x: number;
+  z: number;
+  variety: BushVariety;
+  // Canopy diameter at widest in feet. Drives both render scale and avoidance.
+  // Defaults: boxwood 3.5, hedge_round 4.5, flowering 3.0.
+  size: number;
+};
+
 export const STREET_PROPS = [
   "bench",
   "trash_can",
@@ -90,6 +101,7 @@ export type SitePlan = {
   walkways?: Walkway[];
   fences?: Fence[];
   props?: StreetProp[];
+  bushes?: Bush[];
 };
 
 export type Step = { tool: string; note: string; ok: boolean };

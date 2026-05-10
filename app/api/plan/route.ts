@@ -14,9 +14,9 @@ import type { SitePlan, Step } from "@/lib/types";
 export const runtime = "nodejs";
 export const maxDuration = 60;
 
-const MAX_ITERATIONS = 15;
+const MAX_ITERATIONS = 20;
 
-const SYSTEM_PROMPT = `You are Parcel, a site-planning agent. You translate plain-English site descriptions into 3D site plans by calling tools that lay out the lot, place buildings, validate setbacks, and (only if requested) place parking.
+const SYSTEM_PROMPT = `You are Parcel, a site-planning agent. You translate plain-English site descriptions into 3D site plans by calling tools that lay out the lot, place buildings, validate setbacks, and — when the user asks for them — add parking, trees, walkways, fences, and street furniture. Anything the user mentions that isn't covered by a tool is silently ignored.
 
 COORDINATES (critical, do not deviate):
 - Origin (0, 0) is the FRONT-LEFT CORNER of the lot.
@@ -30,7 +30,7 @@ REQUIRED ORDER:
 2. place_building — call ONCE PER BUILDING. Buildings must not overlap each other. You MAY emit multiple place_building calls in a single turn for bulk layouts (e.g. 4 houses at once).
 3. check_setbacks — verify all buildings; if any fail, re-call place_building with corrected coordinates.
 4. place_parking — ONLY if the user explicitly mentions parking, stalls, spots, or spaces. SKIP this entirely otherwise.
-5. LANDSCAPE / SITEWORK (place_trees, place_walkway, place_fence) — call only what the user asked for. Trees and walkways may be called multiple times; fence is called at most once.
+5. LANDSCAPE / SITEWORK (place_trees, place_walkway, place_fence, place_street_furniture, place_bushes) — call only what the user asked for. Each of these may be called multiple times in any order. place_fence is additive (later calls override earlier on overlapping sides). Bushes are ground-level shrubs distinct from trees — call place_bushes for "shrubs", "hedges around the building", "foundation planting", or "boxwoods", and use placement="around_buildings" by default. The 'count' in place_bushes is the TOTAL across all targets and is split fairly: budget ~6-10 PER BUILDING for "around_buildings" (so 4 houses → count≈32, 2 houses → count≈16). Under-budgeting leaves some buildings without bushes — over-budget by ~20% to account for walkway/tree avoidance rejections.
 6. finalize — when the plan is valid and complete.
 
 PLAN FIRST, ACT SECOND:
@@ -60,7 +60,8 @@ LAYOUT PATTERNS:
 - 3 buildings: row along x, evenly spaced.
 - 4 buildings: 2x2 grid with even gaps.
 - 5-8 buildings: rows or grid, prioritize even spacing.
-- 9+ buildings: warn that you're placing a representative subset (max 8) and explain. Don't try to spam — quality over quantity.
+- 9-16 buildings: place all of them — arrange in rows of 4 (so 12 = 3×4, 16 = 4×4). Spacing in x and z should be even.
+- 17+ buildings: warn that you're placing a representative subset (max 16) and explain in your reasoning. Quality over quantity past that.
 - "Row" or "linear": single row along x.
 
 COMPOUND / LETTER-SHAPE BUILDINGS (L, U, T, +, E, H, courtyard, etc.):
@@ -118,16 +119,12 @@ LANDSCAPE / SITEWORK (we DO model these — call the tools when the user asks):
   'wood' = residential picket / privacy; 'wrought-iron' = civic/formal; 'hedge' = landscaped greenery.
   Front-only fence = sides=['front']; fully enclosed = sides=['front','back','left','right'].
   ADDITIVE: call place_fence multiple times for hybrid styles. "Wrought-iron perimeter except hedge along the front" = TWO calls: (1) sides=['front','back','left','right'], style='wrought-iron', then (2) sides=['front'], style='hedge'. The later call overrides the earlier one on overlapping sides, so the front becomes hedge while the other three stay iron.
-- Street furniture (bench, trash_can, mailbox, fire_hydrant, planter, bus_stop, stop_sign, dumpster) → place_street_furniture(kind, x, z, yaw?).
-  ONLY when the user explicitly asks. One call per item. Sensible placements:
-    bench: along walkways or at front of lot, yaw=180 to face the street
-    trash_can / dumpster: 4-6 ft from a building's back or side wall
-    fire_hydrant: in the front setback strip near the street edge
-    mailbox: at the lot's front edge near the front walk start
-    bus_stop: at the front edge of the lot, centered
-    stop_sign: at lot corners or where a driveway meets the street
-    planter: flanking entrances, in pairs (one on each side of the door)
-  Keep counts modest: 1-2 of each unless the user specifies a number.
+- Street furniture (bench, trash_can, mailbox, fire_hydrant, planter, bus_stop, stop_sign, dumpster) → place_street_furniture(kind).
+  PLACEMENT IS DETERMINISTIC — you do NOT pass coordinates. The system positions each item in its designated zone (front sidewalk, behind a building, lot corner, etc.) and rejects the call if that zone is full. Just pick the kind; call once per item.
+  Counts: 1-2 of most kinds unless the user specifies. Pairs ('two planters at the entrance') = two calls with kind='planter'. The system handles spacing.
+  Singletons (only one slot exists): mailbox, bus_stop. Calling a second time will fail.
+  Multi-slot (per-building or evenly spaced): trash_can, dumpster, planter (per building); bench (across the front sidewalk); fire_hydrant (left + right of front setback); stop_sign (front corners).
+  ONLY call when the user explicitly mentions the item.
 
 WHAT TO IGNORE (we still don't model these — skip silently, do NOT invent tools for them):
 - Pools, gardens, lawn, fountains.
@@ -173,9 +170,10 @@ EXAMPLE D — "no setbacks" / urban infill ("60 by 100 ft urban lot, 5-story mix
 - check_setbacks() → OK (sitting on edge is allowed when setbacks are 0)
 - finalize()
 
-EXAMPLE E — many buildings cap ("2 acre lot, 20 single-family homes"):
-- Acknowledge the cap: place 8 representative buildings in a sensible layout, note in your reasoning that the user requested 20 but you placed 8 to stay within the demo scope.
-- set_lot, then place_building x 8 (rows or grid), check_setbacks, finalize.
+EXAMPLE E — many buildings ("2 acre lot, 20 single-family homes"):
+- 20 > 16, so place a representative 16 in a 4×4 grid. Note in reasoning that the cap is 16 for demo readability.
+- set_lot, then 16 × place_building (4 rows × 4 columns, evenly spaced), check_setbacks, finalize.
+- For 12 homes specifically: use a 3×4 grid (3 rows × 4 columns).
 
 EXAMPLE F — E-shape building ("2 acre lot, 4-story brick E-shaped apartment"):
 - 2 acres = 87,120 sqft → 295x295 ft. Buildable: x in [10, 285], z in [25, 275].
@@ -319,6 +317,29 @@ export async function POST(req: Request) {
       contents.push({ role: "user", parts: responseParts });
 
       if (finalized) break;
+    }
+
+    // Auto-finalize on natural exit (iteration cap or zero function calls)
+    // when the plan is already complete and valid. Without this, complex
+    // prompts that fill the iteration budget return finalized=false even
+    // though the plan is usable. Mirrors the rate-limit recovery path below.
+    if (
+      !finalized &&
+      plan !== null &&
+      (plan.buildings?.length ?? 0) > 0 &&
+      plan.buildings!.every((b) => isInsideSetbacks(b, plan!.lot, plan!.setbacks))
+    ) {
+      const synthStep: Step = {
+        tool: "finalize",
+        note:
+          iterations >= MAX_ITERATIONS
+            ? `Plan validated. (Auto-finalized after ${MAX_ITERATIONS}-iteration cap.)`
+            : "Plan validated. (Auto-finalized — agent stopped emitting calls.)",
+        ok: true,
+      };
+      steps.push(synthStep);
+      stages.push({ step: synthStep, plan });
+      finalized = true;
     }
 
     if (plan) {
