@@ -4,6 +4,7 @@ import dynamic from "next/dynamic";
 import Hero from "@/components/landing/Hero";
 import PromptBar from "@/components/landing/PromptBar";
 import ExamplePills from "@/components/landing/ExamplePills";
+import PastPlans from "@/components/PastPlans";
 import TransitionWipe from "@/components/TransitionWipe";
 import AccentPicker from "@/components/AccentPicker";
 
@@ -45,6 +46,7 @@ export default function Home() {
           onSubmit={() => setTransitioning(true)}
         />
         <ExamplePills onPick={setPrompt} />
+        <PastPlans onLoad={setPrompt} />
       </div>
 
       <footer className="absolute bottom-5 left-0 right-0 text-center font-mono text-[10px] uppercase tracking-[0.2em] text-mute/60">
