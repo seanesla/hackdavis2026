@@ -80,6 +80,13 @@ function PlanInner() {
     return () => window.removeEventListener("keydown", onKey);
   }, [selectedFloor, selectFloor]);
 
+  // While the voice conversation is running, the page should be just the
+  // blurred background + the ConversationScreen — no 3D scene, no toolbars,
+  // no SideRail. Everything appears the moment the user finalizes
+  // (`running` flips inside runFromPrompt) or when re-landing with a built
+  // plan (`plan` already exists).
+  const showSceneUi = !isVoiceMode || running || plan;
+
   return (
     <div className="relative h-screen w-screen overflow-hidden">
       <AccentGrainient subtle />
@@ -89,8 +96,8 @@ function PlanInner() {
         transition={{ duration: 0.7, delay: 0.2 }}
         className="absolute inset-0"
       >
-        <Scene />
-        <DebugToggle />
+        {showSceneUi && <Scene />}
+        {showSceneUi && <DebugToggle />}
         {modeParam === "interview" && <InterviewFlow />}
         {modeParam === "freestyle" && <FreestyleFlow />}
         {voiceModifyOpen && (
@@ -100,12 +107,8 @@ function PlanInner() {
           />
         )}
       </motion.main>
-      {/* On voice-mode entry the conversation overlay is the entire UI.
-          Defer SideRail (with its hammer slot) until the user finalizes —
-          `running` flips synchronously inside runFromPrompt, and `plan`
-          covers the case where they re-land on the page with a build. */}
-      {(!isVoiceMode || running || plan) && <SideRail />}
-      <SceneTools />
+      {showSceneUi && <SideRail />}
+      {showSceneUi && <SceneTools />}
       <TransparencyPill />
     </div>
   );

@@ -1243,6 +1243,195 @@ export const place_pool: ToolFn = (plan, args) => {
   );
 };
 
+// ----- update_building (MUTATES an existing building in place) -------------
+
+export const update_building: ToolFn = (plan, args) => {
+  if (!plan) return fail(plan, "Lot not set. Call set_lot first.");
+  const buildings = plan.buildings ?? [];
+  if (buildings.length === 0) {
+    return fail(plan, "No buildings to update.");
+  }
+
+  const indexRaw = num(args.index);
+  if (indexRaw === null || !Number.isInteger(indexRaw)) {
+    return fail(plan, "update_building requires an integer 'index' (1-based).");
+  }
+  const idx = indexRaw - 1;
+  if (idx < 0 || idx >= buildings.length) {
+    return fail(
+      plan,
+      `update_building index ${indexRaw} is out of range. Valid range: 1..${buildings.length}.`
+    );
+  }
+
+  const current = buildings[idx];
+  const next: Building = { ...current };
+  const changes: string[] = [];
+
+  const xArg = num(args.x);
+  if (xArg !== null) {
+    next.x = xArg;
+    changes.push(`x=${xArg}`);
+  }
+  const zArg = num(args.z);
+  if (zArg !== null) {
+    next.z = zArg;
+    changes.push(`z=${zArg}`);
+  }
+  const wArg = num(args.w);
+  if (wArg !== null) {
+    if (wArg <= 0) return fail(plan, `Building width must be positive (got ${wArg}).`);
+    next.w = wArg;
+    changes.push(`w=${wArg}`);
+  }
+  const dArg = num(args.d);
+  if (dArg !== null) {
+    if (dArg <= 0) return fail(plan, `Building depth must be positive (got ${dArg}).`);
+    next.d = dArg;
+    changes.push(`d=${dArg}`);
+  }
+  const storiesArg = num(args.stories);
+  if (storiesArg !== null) {
+    if (storiesArg <= 0 || !Number.isInteger(storiesArg)) {
+      return fail(plan, `Stories must be a positive integer (got ${storiesArg}).`);
+    }
+    next.stories = storiesArg;
+    changes.push(`stories=${storiesArg}`);
+  }
+  if (typeof args.material === "string") {
+    const m = args.material.toLowerCase();
+    if (!(BUILDING_MATERIALS as readonly string[]).includes(m)) {
+      return fail(
+        plan,
+        `Unknown material "${args.material}". Allowed: ${BUILDING_MATERIALS.join(", ")}.`
+      );
+    }
+    next.material = m as BuildingMaterial;
+    changes.push(`material=${m}`);
+  }
+  if (typeof args.structure_type === "string") {
+    const s = args.structure_type.toLowerCase();
+    if (!(STRUCTURE_TYPES as readonly string[]).includes(s)) {
+      return fail(
+        plan,
+        `Unknown structure_type "${args.structure_type}". Allowed: ${STRUCTURE_TYPES.join(", ")}.`
+      );
+    }
+    next.structure_type = s as StructureType;
+    changes.push(`structure_type=${s}`);
+  }
+  if (typeof args.program === "string") {
+    const p = args.program.trim().toLowerCase().slice(0, 64);
+    if (p) {
+      next.program = p;
+      changes.push(`program="${p}"`);
+    }
+  }
+
+  if (changes.length === 0) {
+    return fail(
+      plan,
+      "update_building was called with no fields to change. Pass at least one of: x, z, w, d, stories, material, structure_type, program."
+    );
+  }
+
+  if (next.x < 0 || next.z < 0 || next.x + next.w > plan.lot.width || next.z + next.d > plan.lot.depth) {
+    return fail(
+      plan,
+      `Updated building extends outside lot. Lot is ${plan.lot.width}x${plan.lot.depth}, building footprint at (${next.x}, ${next.z}) sized ${next.w}x${next.d}.`
+    );
+  }
+  const others = buildings.filter((_, i) => i !== idx);
+  if (rectsOverlapAny(next, others)) {
+    const which = others.findIndex((b) => rectsOverlap(next, b));
+    const otherIdx = buildings.findIndex((b) => b === others[which]);
+    return fail(
+      plan,
+      `Updated building would overlap building #${otherIdx + 1} at (${others[which].x}, ${others[which].z}) ${others[which].w}x${others[which].d}. Pick non-overlapping coordinates.`
+    );
+  }
+
+  // Geometry/identity changed → invalidate parking the way place_building does.
+  const geometryChanged =
+    next.x !== current.x ||
+    next.z !== current.z ||
+    next.w !== current.w ||
+    next.d !== current.d;
+  const updatedBuildings = buildings.map((b, i) => (i === idx ? next : b));
+  const nextPlan: SitePlan = {
+    ...plan,
+    buildings: updatedBuildings,
+    ...(geometryChanged ? { parking: undefined } : {}),
+  };
+
+  return ok(
+    nextPlan,
+    `Updated building #${indexRaw}: ${changes.join(", ")}.${
+      geometryChanged ? " Parking layout cleared (footprint moved/resized)." : ""
+    }`
+  );
+};
+
+// ----- remove_building (DELETES a building by index) -----------------------
+
+export const remove_building: ToolFn = (plan, args) => {
+  if (!plan) return fail(plan, "Lot not set. Call set_lot first.");
+  const buildings = plan.buildings ?? [];
+  if (buildings.length === 0) {
+    return fail(plan, "No buildings to remove.");
+  }
+  const indexRaw = num(args.index);
+  if (indexRaw === null || !Number.isInteger(indexRaw)) {
+    return fail(plan, "remove_building requires an integer 'index' (1-based).");
+  }
+  const idx = indexRaw - 1;
+  if (idx < 0 || idx >= buildings.length) {
+    return fail(
+      plan,
+      `remove_building index ${indexRaw} is out of range. Valid range: 1..${buildings.length}.`
+    );
+  }
+  const removed = buildings[idx];
+  const next: SitePlan = {
+    ...plan,
+    buildings: buildings.filter((_, i) => i !== idx),
+    parking: undefined,
+  };
+  return ok(
+    next,
+    `Removed building #${indexRaw} (${removed.w}x${removed.d} ft${
+      removed.structure_type ? ` ${removed.structure_type}` : ""
+    }). ${next.buildings!.length} building${next.buildings!.length === 1 ? "" : "s"} remaining. Indexing of remaining buildings has shifted — building that was #${idx + 2} (if any) is now #${idx + 1}.`
+  );
+};
+
+// ----- clear_layer (WIPES one entire site layer) ---------------------------
+
+const CLEARABLE_LAYERS = [
+  "parking",
+  "trees",
+  "walkways",
+  "fences",
+  "props",
+  "bushes",
+  "pools",
+] as const;
+type ClearableLayer = (typeof CLEARABLE_LAYERS)[number];
+
+export const clear_layer: ToolFn = (plan, args) => {
+  if (!plan) return fail(plan, "Lot not set.");
+  const layerArg = typeof args.layer === "string" ? args.layer.toLowerCase() : "";
+  if (!(CLEARABLE_LAYERS as readonly string[]).includes(layerArg)) {
+    return fail(
+      plan,
+      `clear_layer requires layer ∈ {${CLEARABLE_LAYERS.join(", ")}}. Got "${args.layer}".`
+    );
+  }
+  const layer = layerArg as ClearableLayer;
+  const next: SitePlan = { ...plan, [layer]: undefined };
+  return ok(next, `Cleared all ${layer}.`);
+};
+
 // ----- Registry -------------------------------------------------------------
 
 export const TOOLS: Record<string, ToolFn> = {
@@ -1256,6 +1445,9 @@ export const TOOLS: Record<string, ToolFn> = {
   place_street_furniture,
   place_bushes,
   place_pool,
+  update_building,
+  remove_building,
+  clear_layer,
   finalize,
 };
 

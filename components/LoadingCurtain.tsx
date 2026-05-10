@@ -20,9 +20,23 @@ export default function LoadingCurtain() {
   const error = useStore((s) => s.error);
   const pathname = usePathname();
   const onPlan = pathname?.startsWith("/plan") ?? false;
+  // Voice flows (interview/freestyle) own the screen with their own
+  // conversation/build UI — no global hammer overlay in this lane. Read
+  // `?mode=` directly from window.location instead of useSearchParams so
+  // we don't pull this client component into a Suspense boundary at the
+  // root layout (that combo caused a black flash during navigation).
+  // `mode` is set at /plan entry and doesn't change mid-session, and the
+  // curtain re-renders on every store/pathname change, so synchronous
+  // reads stay in sync without an explicit subscription.
+  const inVoiceFlow =
+    onPlan &&
+    typeof window !== "undefined" &&
+    /[?&]mode=(interview|freestyle)\b/.test(window.location.search);
   // On /plan, hide once the first stage lands and buildings start animating —
   // the centered overlay would otherwise cover the construction.
-  const active = onPlan ? (loading || running) && plan === null : loading;
+  const active =
+    !inVoiceFlow &&
+    (onPlan ? (loading || running) && plan === null : loading);
   // Surface a setup error prominently when there's no plan to fall back on.
   // The most common culprit is a missing GEMINI_API_KEY in .env.local — without
   // this, the curtain used to dismiss silently and leave the user staring at
