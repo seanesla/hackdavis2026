@@ -19,6 +19,7 @@ export const STRUCTURE_TYPES = [
   "office",
   "warehouse",
   "parking_garage",
+  "garage",
   "greenhouse",
   "pavilion",
 ] as const;
@@ -32,6 +33,13 @@ export type Building = {
   stories: number;
   material?: BuildingMaterial;
   structure_type?: StructureType;
+  // Free-form description of the building's USE, captured verbatim from the
+  // user's brief (e.g. "elementary school", "single-family house", "fire
+  // station", "public library", "corner cafe"). Drives the interior room
+  // layout + furniture. Orthogonal to `structure_type`, which only affects
+  // exterior massing — a "fire station" might still render as a `house`-
+  // typed building visually but get a fire-station interior.
+  program?: string;
 };
 
 export const TREE_SPECIES = ["oak", "pine", "palm", "maple"] as const;
@@ -92,6 +100,20 @@ export type StreetProp = {
   yaw?: number;
 };
 
+export const POOL_SHAPES = ["rectangle", "round", "kidney"] as const;
+export type PoolShape = (typeof POOL_SHAPES)[number];
+export type Pool = {
+  // Front-left corner of the pool's bounding box, in lot coords.
+  x: number;
+  z: number;
+  // Bounding box dimensions in feet. For shape='round' the pool is a circle
+  // inscribed in the bbox (so w should equal d); for 'kidney' the curve fits
+  // inside the bbox.
+  w: number;
+  d: number;
+  shape: PoolShape;
+};
+
 export type SitePlan = {
   lot: { width: number; depth: number };
   setbacks: { front: number; back: number; side: number };
@@ -102,6 +124,7 @@ export type SitePlan = {
   fences?: Fence[];
   props?: StreetProp[];
   bushes?: Bush[];
+  pools?: Pool[];
 };
 
 export type Step = { tool: string; note: string; ok: boolean };

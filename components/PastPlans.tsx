@@ -50,6 +50,8 @@ export default function PastPlans({ onLoad }: Props = {}) {
   const [error, setError] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draftNotes, setDraftNotes] = useState("");
+  const [expanded, setExpanded] = useState(false);
+  const COLLAPSED_COUNT = 3;
 
   const refetch = useCallback(async (): Promise<void> => {
     try {
@@ -121,7 +123,7 @@ export default function PastPlans({ onLoad }: Props = {}) {
       )}
 
       <div className="space-y-1.5">
-        {history?.map((s) => {
+        {(expanded ? history : history?.slice(0, COLLAPSED_COUNT))?.map((s) => {
           const isEditing = editingId === s.id;
           return (
             <div
@@ -137,21 +139,21 @@ export default function PastPlans({ onLoad }: Props = {}) {
                     downloadPlan({ prompt: s.prompt, plan: s.sitePlan, steps: [] })
                   }
                   title="download this plan as a JSON file"
-                  className="shrink-0 font-mono text-[10px] uppercase tracking-[0.2em] text-mute hover:text-accent transition-colors px-2 py-1"
+                  className="shrink-0 font-mono text-[10px] uppercase tracking-[0.2em] text-mute hover:text-accent transition-colors px-2 py-1 cursor-pointer"
                 >
                   export ↓
                 </button>
                 <button
                   onClick={() => handleOpenSaved(s)}
                   title="open the saved plan instantly (no api call)"
-                  className="shrink-0 font-mono text-[10px] uppercase tracking-[0.2em] text-mute hover:text-accent transition-colors px-2 py-1"
+                  className="shrink-0 font-mono text-[10px] uppercase tracking-[0.2em] text-mute hover:text-accent transition-colors px-2 py-1 cursor-pointer"
                 >
                   open ↗
                 </button>
                 <button
                   onClick={() => handleLoadPrompt(s.prompt)}
                   title="put this prompt back in the input (will call gemini again)"
-                  className="shrink-0 font-mono text-[10px] uppercase tracking-[0.2em] text-mute/70 hover:text-accent transition-colors px-2 py-1"
+                  className="shrink-0 font-mono text-[10px] uppercase tracking-[0.2em] text-mute/70 hover:text-accent transition-colors px-2 py-1 cursor-pointer"
                 >
                   re-run ↵
                 </button>
@@ -171,13 +173,13 @@ export default function PastPlans({ onLoad }: Props = {}) {
                     <div className="flex gap-1.5 justify-end">
                       <button
                         onClick={cancelEdit}
-                        className="font-mono text-[10px] uppercase tracking-[0.2em] text-mute/60 hover:text-mute transition-colors px-2 py-1"
+                        className="font-mono text-[10px] uppercase tracking-[0.2em] text-mute/60 hover:text-mute transition-colors px-2 py-1 cursor-pointer"
                       >
                         cancel
                       </button>
                       <button
                         onClick={() => void saveNotes(s)}
-                        className="font-mono text-[10px] uppercase tracking-[0.2em] text-accent hover:opacity-80 transition-opacity px-2 py-1"
+                        className="font-mono text-[10px] uppercase tracking-[0.2em] text-accent hover:opacity-80 transition-opacity px-2 py-1 cursor-pointer"
                       >
                         save note
                       </button>
@@ -187,14 +189,14 @@ export default function PastPlans({ onLoad }: Props = {}) {
                   <button
                     onClick={() => startEdit(s)}
                     title="edit notes"
-                    className="block w-full text-left font-mono text-[11px] text-mute/70 italic hover:text-mute transition-colors"
+                    className="block w-full text-left font-mono text-[11px] text-mute/70 italic hover:text-mute transition-colors cursor-pointer"
                   >
                     {s.notes}
                   </button>
                 ) : (
                   <button
                     onClick={() => startEdit(s)}
-                    className="font-mono text-[10px] uppercase tracking-[0.2em] text-mute/40 hover:text-accent transition-colors"
+                    className="font-mono text-[10px] uppercase tracking-[0.2em] text-mute/40 hover:text-accent transition-colors cursor-pointer"
                   >
                     + add note
                   </button>
@@ -204,6 +206,19 @@ export default function PastPlans({ onLoad }: Props = {}) {
           );
         })}
       </div>
+
+      {history && history.length > COLLAPSED_COUNT && (
+        <div className="text-center pt-1">
+          <button
+            onClick={() => setExpanded((v) => !v)}
+            className="font-mono text-[10px] uppercase tracking-[0.2em] text-mute/70 hover:text-accent transition-colors cursor-pointer"
+          >
+            {expanded
+              ? "see less ↑"
+              : `see ${history.length - COLLAPSED_COUNT} more ↓`}
+          </button>
+        </div>
+      )}
     </div>
   );
 }

@@ -1,8 +1,25 @@
 "use client";
-import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  Fragment,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { useFrame, useThree } from "@react-three/fiber";
-import { Edges, Html, Line, RoundedBox } from "@react-three/drei";
+import { Edges, Html as DreiHtml, Line, RoundedBox } from "@react-three/drei";
+import type { ComponentProps } from "react";
 import * as THREE from "three";
+
+// Drei's <Html> defaults to zIndexRange=[16777271, 0] (yes, 16 million)
+// for depth-sorted scene labels. That puts every floating tooltip way
+// above the SideRail / SceneTools / Audit panels (z-10). Wrap it with a
+// low default range so floating UI panels always render on top, while
+// still letting any individual call override via its own zIndexRange.
+function Html(props: ComponentProps<typeof DreiHtml>) {
+  return <DreiHtml zIndexRange={[5, 0]} {...props} />;
+}
 
 // Distance-based LOD. When the camera is far away, sub-foot architectural
 // details (mullions, sills, lintels, door handles, flagstone joint lines)
@@ -32,6 +49,7 @@ import {
   type BuildingMaterial,
   type Bush,
   type Fence,
+  type Pool,
   type SitePlan,
   type StreetProp,
   type StructureType,
@@ -63,8 +81,6 @@ import {
 // at the selected level, small enough that the lift reads as the same
 // building (not a separate object).
 const STORY_LIFT_FT = 14;
-
-const SCAFFOLD_BOX = { w: 30, d: 30, h: 24 };
 
 const Y = {
   lotBottom: 0,
@@ -199,22 +215,14 @@ export default function SitePlanMesh({ siteplan }: Props) {
   const plan = siteplan !== undefined ? siteplan : storePlan;
   const debug = useDebugOverlay();
 
+  // While drafting (plan not yet returned) we used to render an accent-
+  // colored placeholder box here. The floating hammer + "drafting…" overlay
+  // already convey the loading state, so the empty scene reads cleaner.
   if (!plan || plan.lot.width <= 0 || plan.lot.depth <= 0) {
-    return (
-      <RoundedBox
-        position={[0, SCAFFOLD_BOX.h / 2, 0]}
-        args={[SCAFFOLD_BOX.w, SCAFFOLD_BOX.h, SCAFFOLD_BOX.d]}
-        radius={0.6}
-        smoothness={3}
-        castShadow
-        receiveShadow
-      >
-        <meshStandardMaterial color={accent} roughness={0.45} metalness={0.05} />
-      </RoundedBox>
-    );
+    return null;
   }
 
-  const { lot, setbacks, buildings, parking, trees, walkways, fences, props, bushes } =
+  const { lot, setbacks, buildings, parking, trees, walkways, fences, props, bushes, pools } =
     plan;
   const buildable = isBuildable(lot, setbacks);
   const validBuildings = (buildings ?? []).filter(
@@ -233,6 +241,7 @@ export default function SitePlanMesh({ siteplan }: Props) {
         setbacks={setbacks}
         buildings={validBuildings}
         parking={stalls}
+        trees={trees ?? []}
         accent={accent}
         buildable={buildable}
         manualWalkways={walkways}
@@ -248,6 +257,7 @@ export default function SitePlanMesh({ siteplan }: Props) {
             lot,
             validBuildings,
             stalls,
+            trees ?? [],
             (walkways?.length ?? 0) > 0
           )}
         />
@@ -285,6 +295,10 @@ export default function SitePlanMesh({ siteplan }: Props) {
 
       {(fences ?? []).map((f, i) => (
         <FenceMesh key={`f-${i}-${f.style}-${f.sides.join("|")}`} lot={lot} fence={f} />
+      ))}
+
+      {(pools ?? []).map((p, i) => (
+        <PoolMesh key={`pool-${i}-${p.x}-${p.z}-${p.shape}`} pool={p} delay={0.4 + i * 0.05} />
       ))}
 
       {(props ?? []).map((p, i) => (
@@ -541,6 +555,7 @@ function SiteworkLayer({
   setbacks,
   buildings,
   parking,
+  trees,
   accent,
   buildable,
   manualWalkways,
@@ -549,14 +564,15 @@ function SiteworkLayer({
   setbacks: SitePlan["setbacks"];
   buildings: NonNullable<SitePlan["buildings"]>;
   parking: NonNullable<SitePlan["parking"]>;
+  trees: NonNullable<SitePlan["trees"]>;
   accent: string;
   buildable: boolean;
   manualWalkways?: SitePlan["walkways"];
 }) {
   const hasManualWalks = (manualWalkways?.length ?? 0) > 0;
   const autoPaths = useMemo(
-    () => computeAutoPaths(lot, buildings, parking, hasManualWalks),
-    [lot, buildings, parking, hasManualWalks]
+    () => computeAutoPaths(lot, buildings, parking, trees, hasManualWalks),
+    [lot, buildings, parking, trees, hasManualWalks]
   );
 
   return (
@@ -768,13 +784,44 @@ type AutoPath = Walkway & { kind: "front_walk" | "driveway"; building?: number }
 const STALL_W_FT = 9;
 const STALL_D_FT = 18;
 
+// Per-species canopy-radius coefficient. Stays in sync with the renderer +
+// place_trees in lib/tools.ts. Used to size the circular tree obstacles
+// auto-paths must route around.
+const AUTOPATH_CANOPY_R: Record<string, number> = {
+  oak: 0.42,
+  maple: 0.4,
+  pine: 0.3,
+  palm: 0.16,
+};
+// Small buffer between path edge and canopy edge so leaves don't graze the
+// driveway / walk.
+const TREE_PATH_BUFFER_FT = 1;
+
+// Distance from a circle to an axis-aligned rectangle. Returns true when
+// the circle overlaps the rectangle (or sits inside it).
+function circleOverlapsRect(
+  cx: number,
+  cz: number,
+  cr: number,
+  r: Rect,
+): boolean {
+  const dx = Math.max(r.x - cx, 0, cx - (r.x + r.w));
+  const dz = Math.max(r.z - cz, 0, cz - (r.z + r.d));
+  return Math.hypot(dx, dz) < cr;
+}
+
 function computeAutoPaths(
   lot: SitePlan["lot"],
   buildings: NonNullable<SitePlan["buildings"]>,
   parking: NonNullable<SitePlan["parking"]>,
+  trees: NonNullable<SitePlan["trees"]>,
   hasManualWalks: boolean
 ): AutoPath[] {
-  if (hasManualWalks) return [];
+  // Manual walks suppress the auto front-walks (the user/agent has chosen
+  // their own pedestrian routing). They do NOT suppress the auto-driveway —
+  // a driveway connects parking to the street, which manual walkways
+  // typically don't model. Suppressing both was a bug: any manual walkway
+  // would orphan the parking lot from the curb.
   const out: AutoPath[] = [];
   const buildingRects: Rect[] = buildings.map((b) => ({
     x: b.x,
@@ -788,6 +835,19 @@ function computeAutoPaths(
     w: STALL_W_FT,
     d: STALL_D_FT,
   }));
+  // Trees as circular obstacles. The auto-driveway + auto front-walks were
+  // previously plowing through any tree in their corridor because the only
+  // obstacles they checked were buildings + stalls. Shift candidates dodge
+  // these now too.
+  const treeCircles = trees.map((t) => ({
+    x: t.x,
+    z: t.z,
+    r:
+      (AUTOPATH_CANOPY_R[t.species] ?? 0.4) * t.height +
+      TREE_PATH_BUFFER_FT,
+  }));
+  const overlapsAnyTree = (r: Rect): boolean =>
+    treeCircles.some((c) => circleOverlapsRect(c.x, c.z, c.r, r));
 
   const obstaclesFor = (kind: "walk" | "drive"): Rect[] =>
     kind === "walk"
@@ -798,7 +858,9 @@ function computeAutoPaths(
         buildingRects;
 
   // ── Front walks: curb (z = -8) → each building's door
-  for (let i = 0; i < buildings.length; i++) {
+  // Skipped entirely if the agent placed manual walkways — they take over
+  // pedestrian routing.
+  if (!hasManualWalks) for (let i = 0; i < buildings.length; i++) {
     const b = buildings[i];
     const doorX = b.x + b.w / 2;
     if (b.z <= 0) continue;
@@ -807,14 +869,23 @@ function computeAutoPaths(
     // Prefer the centered path; if blocked, slide left or right by up to 12ft
     // in 3ft increments so we still serve a building whose door is partially
     // occluded by parking.
+    // Range extended to ±18ft (was ±12ft) — a mature oak has ~10ft canopy
+    // radius, so a centered walk needs to slide ~12-15ft to clear it.
     const candidatesX = [
       doorX,
       doorX - 3, doorX + 3,
       doorX - 6, doorX + 6,
       doorX - 9, doorX + 9,
       doorX - 12, doorX + 12,
+      doorX - 15, doorX + 15,
+      doorX - 18, doorX + 18,
     ];
+    // Two-pass selection: prefer the first candidate that's clear of
+    // buildings+stalls AND dodges every tree canopy. If no such X exists,
+    // fall back to the first building/stall-clear candidate even if it
+    // grazes a tree — a walk grazing leaves still beats no walk at all.
     let chosenX: number | null = null;
+    let fallbackX: number | null = null;
     for (const tx of candidatesX) {
       if (tx < walkW / 2 || tx > lot.width - walkW / 2) continue;
       const r: Rect = { x: tx - walkW / 2, z: 0, w: walkW, d: b.z };
@@ -825,11 +896,14 @@ function computeAutoPaths(
         if (idx < buildingRects.length) return idx !== i;
         return true;
       });
-      if (!otherObstacles.some((o) => rectsOverlap(r, o))) {
-        chosenX = tx;
-        break;
-      }
+      if (otherObstacles.some((o) => rectsOverlap(r, o))) continue;
+      if (fallbackX === null) fallbackX = tx;
+      // Prefer a tree-free corridor when one is available.
+      if (overlapsAnyTree(r)) continue;
+      chosenX = tx;
+      break;
     }
+    if (chosenX === null) chosenX = fallbackX;
     if (chosenX === null) continue;
     out.push({
       kind: "front_walk",
@@ -856,10 +930,16 @@ function computeAutoPaths(
       const dwayW = 12;
       const buildingObstacles = obstaclesFor("drive");
 
-      const tryX = (x: number): boolean => {
+      // Building-only check: the hard constraint (driveway can't pass
+      // through a wall). Tree dodge is a soft preference handled below.
+      const buildingClearX = (x: number): boolean => {
         if (x < dwayW / 2 || x > lot.width - dwayW / 2) return false;
         const r: Rect = { x: x - dwayW / 2, z: 0, w: dwayW, d: minZ };
         return !buildingObstacles.some((o) => rectsOverlap(r, o));
+      };
+      const treeClearX = (x: number): boolean => {
+        const r: Rect = { x: x - dwayW / 2, z: 0, w: dwayW, d: minZ };
+        return !overlapsAnyTree(r);
       };
 
       // Prefer ordering: (1) directly aligned with parking, (2) shifted toward
@@ -879,23 +959,112 @@ function computeAutoPaths(
       candidates.push(dwayW / 2 + 1);
       candidates.push(lot.width - dwayW / 2 - 1);
 
+      // Two-pass like the front-walk: first try to find a candidate that's
+      // both building-clear AND tree-clear. If none exists, accept the first
+      // building-clear candidate so the driveway always renders — better to
+      // graze a tree canopy than fail to draw the approach.
       let dwayX: number | null = null;
+      let dwayFallback: number | null = null;
       for (const cx of candidates) {
-        if (tryX(cx)) {
-          dwayX = cx;
-          break;
-        }
+        if (!buildingClearX(cx)) continue;
+        if (dwayFallback === null) dwayFallback = cx;
+        if (!treeClearX(cx)) continue;
+        dwayX = cx;
+        break;
       }
+      if (dwayX === null) dwayX = dwayFallback;
       if (dwayX !== null) {
-        out.push({
-          kind: "driveway",
-          x1: dwayX,
-          z1: -8,
-          x2: dwayX,
-          z2: minZ,
-          width: dwayW,
-          material: "asphalt",
+        // Real parking lots have a back-out aisle in front of the stalls
+        // — cars approach via a driveway, turn into the aisle, then back
+        // into individual stalls. We try to model that, but ONLY emit the
+        // aisle if it doesn't overlap any building. (Otherwise we get the
+        // failure mode where parking packed against a building's rear face
+        // leaves no room for an aisle and asphalt renders under the wall.)
+        //
+        // Three cases, in priority order:
+        //   1. Extended aisle (basic aisle stretched to meet an off-center
+        //      approach) — best, creates an L-shape connecting any approach
+        //      to all stalls
+        //   2. Basic aisle (just parking row width + 3ft overshoot) — fits
+        //      in tighter layouts but won't visually connect a far-off-center
+        //      approach
+        //   3. No aisle — straight driveway from curb to row front. Used
+        //      when buildings sit right behind the parking with no aisle gap.
+        const aisleZ = Math.max(2, minZ - 6);
+        const aisleHalf = dwayW / 2;
+        // Hard constraint: aisle can never overlap a building wall.
+        const buildingOnlyBlocked = (rect: Rect): boolean =>
+          buildingObstacles.some((o) => rectsOverlap(rect, o));
+        // Soft constraint: prefer not to graze trees, but accept it if no
+        // tree-free option exists — better an aisle through a few canopies
+        // than no aisle at all.
+        const treeClearedBlocked = (rect: Rect): boolean =>
+          buildingOnlyBlocked(rect) || overlapsAnyTree(rect);
+
+        const basicAisleLeft = minX - 3;
+        const basicAisleRight = maxX + 3;
+        const extAisleLeft = Math.min(basicAisleLeft, dwayX - dwayW / 2);
+        const extAisleRight = Math.max(basicAisleRight, dwayX + dwayW / 2);
+
+        const aisleRect = (left: number, right: number): Rect => ({
+          x: left,
+          z: aisleZ - aisleHalf,
+          w: right - left,
+          d: dwayW,
         });
+
+        let extOK = !treeClearedBlocked(aisleRect(extAisleLeft, extAisleRight));
+        let basicOK = !treeClearedBlocked(
+          aisleRect(basicAisleLeft, basicAisleRight),
+        );
+        // If trees blocked both shapes, retry with the building-only
+        // constraint so we still emit an aisle.
+        if (!extOK && !basicOK) {
+          extOK = !buildingOnlyBlocked(aisleRect(extAisleLeft, extAisleRight));
+          basicOK = !buildingOnlyBlocked(
+            aisleRect(basicAisleLeft, basicAisleRight),
+          );
+        }
+
+        if (extOK || basicOK) {
+          // Approach: curb → aisle (cut short so it tees into the aisle
+          // instead of running all the way to the stalls).
+          out.push({
+            kind: "driveway",
+            x1: dwayX,
+            z1: -8,
+            x2: dwayX,
+            z2: aisleZ,
+            width: dwayW,
+            material: "asphalt",
+          });
+          // Prefer extended; fall back to basic if extension would clip a
+          // building. Either form gives every stall direct aisle access.
+          const useLeft = extOK ? extAisleLeft : basicAisleLeft;
+          const useRight = extOK ? extAisleRight : basicAisleRight;
+          out.push({
+            kind: "driveway",
+            x1: useLeft,
+            z1: aisleZ,
+            x2: useRight,
+            z2: aisleZ,
+            width: dwayW,
+            material: "asphalt",
+          });
+        } else {
+          // No aisle fits — buildings sit right behind the parking row.
+          // Emit just the straight approach to the row front. tryX already
+          // verified this approach doesn't itself overlap a building.
+          out.push({
+            kind: "driveway",
+            x1: dwayX,
+            z1: -8,
+            x2: dwayX,
+            z2: minZ,
+            width: dwayW,
+            material: "asphalt",
+          });
+        }
       }
     }
   }
@@ -1156,25 +1325,65 @@ function SetbackEnvelope({
   );
 }
 
-// Smooth grow-up animation. No bouncing, no z-clipping — anchored at the base
-// and scales Y from 0 → 1 with an ease-out cubic. Buildings rise out of the lot.
-function useGrowUp<T extends THREE.Object3D>(durationS = 0.7, delay = 0) {
+// Drop curve: quadratic-accelerating fall (gravity feel) followed by two
+// dampened squash-bounces. Bounces are intentionally subtle — a full ease-out-
+// bounce sends a 30ft building 22ft back up, which reads as "floating".
+function easeOutDrop(t: number): number {
+  if (t < 0.6) {
+    const u = t / 0.6;
+    return u * u;
+  }
+  if (t < 0.85) {
+    const u = (t - 0.6) / 0.25;
+    return 1 - Math.sin(u * Math.PI) * 0.12;
+  }
+  const u = (t - 0.85) / 0.15;
+  return 1 - Math.sin(u * Math.PI) * 0.04;
+}
+
+// Drop-and-bounce reveal. Buildings fall from above the lot and bounce to
+// rest. The caller passes the explicit rest Y so we never read it back from
+// the live position (which would capture the dropped value on Strict Mode's
+// double-effect or any prop-driven re-render, leaving the building floating).
+// Anchored at the base means no z-fighting with the lot during landing.
+const DROP_HEIGHT_FT = 90;
+function useGrowUp<T extends THREE.Object3D>(
+  durationS = 1.0,
+  delay = 0,
+  restY = Y.lotTop
+) {
   const ref = useRef<T>(null);
   const t = useRef(0);
   const elapsed = useRef(0);
 
+  // Lift the group up before first paint so we don't flash one frame at
+  // ground level. Hidden until delay elapses so staggered siblings don't
+  // hover visibly.
+  useLayoutEffect(() => {
+    const m = ref.current;
+    if (!m) return;
+    m.position.y = restY + DROP_HEIGHT_FT;
+    if (delay > 0) m.visible = false;
+  }, [delay, restY]);
+
   useFrame((_, dt) => {
     const m = ref.current;
     if (!m) return;
+
     elapsed.current += dt;
     if (elapsed.current < delay) {
-      m.scale.y = 0.0001;
+      m.visible = false;
+      m.position.y = restY + DROP_HEIGHT_FT;
       return;
     }
-    if (t.current >= 1) return;
+    if (!m.visible) m.visible = true;
+    if (t.current >= 1) {
+      m.position.y = restY;
+      return;
+    }
     t.current = Math.min(1, t.current + dt / durationS);
-    const e = 1 - Math.pow(1 - t.current, 3);
-    m.scale.y = Math.max(0.0001, e);
+    const e = easeOutDrop(t.current);
+    m.position.y = restY + (1 - e) * DROP_HEIGHT_FT;
   });
 
   return ref;
@@ -1925,6 +2134,10 @@ function Building(props: BuildingProps) {
     if (t === "parking_garage") rendered = <ParkingGarageBuilding {...props} />;
     else if (t === "greenhouse") rendered = <GreenhouseBuilding {...props} />;
     else if (t === "pavilion") rendered = <PavilionBuilding {...props} />;
+    else if (t === "garage") rendered = <GarageBuilding {...props} />;
+    else if (t === "warehouse") rendered = <WarehouseBuilding {...props} />;
+    else if (t === "house") rendered = <HouseBuilding {...props} />;
+    else if (t === "apartment") rendered = <ApartmentBuilding {...props} />;
     else rendered = <DefaultBuilding {...props} />;
   } else {
     rendered = <DefaultBuilding {...props} />;
@@ -2030,7 +2243,7 @@ function ParkingGarageBuilding({
   const height = building.stories * STORY_HEIGHT_FT;
   const cx = building.x + building.w / 2;
   const cz = building.z + building.d / 2;
-  const ref = useGrowUp<THREE.Group>(0.75, delay);
+  const ref = useGrowUp<THREE.Group>(1.0, delay);
 
   const concrete = MATERIAL_PRESETS.concrete;
   const slabT = 1.2;
@@ -2150,7 +2363,7 @@ function GreenhouseBuilding({
   const height = building.stories * STORY_HEIGHT_FT;
   const cx = building.x + building.w / 2;
   const cz = building.z + building.d / 2;
-  const ref = useGrowUp<THREE.Group>(0.75, delay);
+  const ref = useGrowUp<THREE.Group>(1.0, delay);
 
   const frameColor = valid ? "#1f2a24" : COLORS.buildingInvalid;
   const glassColor = "#bcd5d8";
@@ -2271,7 +2484,7 @@ function PavilionBuilding({
   const height = STORY_HEIGHT_FT;
   const cx = building.x + building.w / 2;
   const cz = building.z + building.d / 2;
-  const ref = useGrowUp<THREE.Group>(0.75, delay);
+  const ref = useGrowUp<THREE.Group>(1.0, delay);
 
   const woodTrim = "#7a543a";
   const beam = "#3d2316";
@@ -2340,6 +2553,496 @@ function PavilionBuilding({
           {building.w}×{building.d} ft · pavilion
         </div>
       </Html>
+    </group>
+  );
+}
+
+// ── WarehouseBuilding ─────────────────────────────────────────────────────
+// Tall industrial shed: tilt-up concrete panels with vertical reveal joints,
+// roll-up loading dock doors on the back face, a clerestory window strip on
+// the side faces, and a flat metal roof. Skips the floor-reveal mechanic by
+// design — warehouses are typically a single open volume.
+function WarehouseBuilding({
+  building,
+  valid,
+  delay = 0.1,
+}: BuildingProps) {
+  const w = building.w;
+  const d = building.d;
+  const stories = Math.max(1, building.stories);
+  const height = stories * STORY_HEIGHT_FT;
+  const cx = building.x + w / 2;
+  const cz = building.z + d / 2;
+  const ref = useGrowUp<THREE.Group>(1.0, delay);
+
+  // Tilt-up concrete by default; if the user picked steel/glass we tint.
+  const preset = presetFor(building.material);
+  const bodyColor = valid ? preset.body : COLORS.buildingInvalid;
+  const edgeColor = valid ? preset.edge : COLORS.buildingInvalid;
+  const dockColor = "#2a2a2e";
+  const dockSlat = "#4a4a4e";
+  const roofColor = "#1f242b";
+
+  // Vertical tilt-up panel reveals: every ~15ft.
+  const panelXs = useMemo(() => {
+    const n = Math.max(2, Math.round(w / 15));
+    return Array.from({ length: n - 1 }, (_, i) => -w / 2 + ((i + 1) * w) / n);
+  }, [w]);
+  const panelZs = useMemo(() => {
+    const n = Math.max(2, Math.round(d / 15));
+    return Array.from({ length: n - 1 }, (_, i) => -d / 2 + ((i + 1) * d) / n);
+  }, [d]);
+
+  // Roll-up loading docks on the back (+z) face.
+  const dockW = 10;
+  const dockH = Math.min(11, height - 2);
+  const dockGap = 4;
+  const dockCount = Math.max(
+    2,
+    Math.min(4, Math.floor((w - 12) / (dockW + dockGap)))
+  );
+  const dockTotalW = dockCount * dockW + (dockCount - 1) * dockGap;
+  const dockStartX = -dockTotalW / 2;
+  const slatLines = 6; // suggestive, not literal — keeps geometry light
+
+  // Clerestory window band high on the side (±x) faces.
+  const clerestoryY = Math.max(height - 4, height * 0.7);
+  const clerestoryH = 2.5;
+
+  // Personnel door on the front (-z) face.
+  const personnelDoorW = 3.5;
+  const personnelDoorH = 7;
+
+  return (
+    <group ref={ref} position={[cx, Y.lotTop, cz]}>
+      {/* Main mass */}
+      <mesh position={[0, height / 2, 0]} castShadow receiveShadow>
+        <boxGeometry args={[w, height, d]} />
+        <meshStandardMaterial color={bodyColor} roughness={0.92} metalness={0.04} />
+        <Edges color={edgeColor} lineWidth={0.6} />
+      </mesh>
+
+      {/* Vertical tilt-up panel reveal joints — one set per face */}
+      {panelXs.map((x, i) => (
+        <Fragment key={`pj-w-${i}`}>
+          <mesh position={[x, height / 2, -d / 2 - 0.02]}>
+            <planeGeometry args={[0.18, height]} />
+            <meshBasicMaterial color={edgeColor} />
+          </mesh>
+          <mesh position={[x, height / 2, d / 2 + 0.02]} rotation={[0, Math.PI, 0]}>
+            <planeGeometry args={[0.18, height]} />
+            <meshBasicMaterial color={edgeColor} />
+          </mesh>
+        </Fragment>
+      ))}
+      {panelZs.map((z, i) => (
+        <Fragment key={`pj-d-${i}`}>
+          <mesh position={[-w / 2 - 0.02, height / 2, z]} rotation={[0, -Math.PI / 2, 0]}>
+            <planeGeometry args={[0.18, height]} />
+            <meshBasicMaterial color={edgeColor} />
+          </mesh>
+          <mesh position={[w / 2 + 0.02, height / 2, z]} rotation={[0, Math.PI / 2, 0]}>
+            <planeGeometry args={[0.18, height]} />
+            <meshBasicMaterial color={edgeColor} />
+          </mesh>
+        </Fragment>
+      ))}
+
+      {/* Loading dock doors on back face */}
+      {Array.from({ length: dockCount }).map((_, i) => {
+        const x = dockStartX + i * (dockW + dockGap) + dockW / 2;
+        return (
+          <Fragment key={`dock-${i}`}>
+            {/* Recessed door panel */}
+            <mesh position={[x, dockH / 2 + 0.6, d / 2 + 0.02]}>
+              <boxGeometry args={[dockW, dockH, 0.2]} />
+              <meshStandardMaterial color={dockColor} roughness={0.7} />
+              <Edges color="#0c0c0e" lineWidth={0.5} />
+            </mesh>
+            {/* Suggestive horizontal slat lines */}
+            {Array.from({ length: slatLines }).map((_, j) => (
+              <mesh
+                key={`slat-${j}`}
+                position={[
+                  x,
+                  0.6 + ((j + 1) * dockH) / (slatLines + 1),
+                  d / 2 + 0.13,
+                ]}
+              >
+                <planeGeometry args={[dockW - 0.4, 0.08]} />
+                <meshBasicMaterial color={dockSlat} />
+              </mesh>
+            ))}
+            {/* Concrete dock platform / bumper sitting outside the wall */}
+            <mesh
+              position={[x, 0.55, d / 2 + 1.6]}
+              castShadow
+              receiveShadow
+            >
+              <boxGeometry args={[dockW + 1.5, 1.1, 3]} />
+              <meshStandardMaterial color={"#7a7a72"} roughness={0.95} />
+              <Edges color={"#3e3e3a"} lineWidth={0.4} />
+            </mesh>
+          </Fragment>
+        );
+      })}
+
+      {/* Clerestory window band on side faces */}
+      {[1, -1].map((sign) => (
+        <mesh
+          key={`cl-${sign > 0 ? "r" : "l"}`}
+          position={[(sign * w) / 2 + sign * 0.04, clerestoryY, 0]}
+          rotation={[0, sign > 0 ? Math.PI / 2 : -Math.PI / 2, 0]}
+        >
+          <planeGeometry args={[Math.max(4, d - 8), clerestoryH]} />
+          <meshStandardMaterial
+            color={"#7a9bb0"}
+            emissive={"#5a8baf"}
+            emissiveIntensity={0.35}
+            roughness={0.2}
+            metalness={0.6}
+          />
+        </mesh>
+      ))}
+
+      {/* Personnel front door */}
+      <mesh position={[0, personnelDoorH / 2 + 0.05, -d / 2 - 0.04]}>
+        <planeGeometry args={[personnelDoorW, personnelDoorH]} />
+        <meshStandardMaterial color={"#1f1f22"} roughness={0.7} />
+      </mesh>
+      {/* Door frame edge */}
+      <mesh position={[0, personnelDoorH / 2 + 0.05, -d / 2 - 0.05]}>
+        <planeGeometry args={[personnelDoorW + 0.4, personnelDoorH + 0.2]} />
+        <meshBasicMaterial color={edgeColor} />
+      </mesh>
+
+      {/* Flat parapet roof */}
+      <mesh position={[0, height + 0.6, 0]} castShadow receiveShadow>
+        <boxGeometry args={[w + 0.3, 1.2, d + 0.3]} />
+        <meshStandardMaterial color={roofColor} roughness={0.85} metalness={0.15} />
+        <Edges color={edgeColor} lineWidth={0.5} />
+      </mesh>
+
+      {/* Rooftop HVAC */}
+      <RooftopHVAC w={w} d={d} baseY={height + 1.2} />
+
+      <Html position={[0, height + 6, 0]} center>
+        <div className="whitespace-nowrap rounded bg-paper px-2 py-1 font-mono text-[10px] uppercase tracking-wider text-ink shadow-md">
+          {Math.round(w)}×{Math.round(d)} ft · warehouse
+        </div>
+      </Html>
+    </group>
+  );
+}
+
+// ── GarageBuilding ────────────────────────────────────────────────────────
+// Small RESIDENTIAL garage (1-2 cars). Single-story flat-roofed box with one
+// big roll-up overhead door on the front face and a single small side window.
+// Distinct from `parking_garage` (multi-level public deck).
+function GarageBuilding({ building, valid, delay = 0.1 }: BuildingProps) {
+  const w = building.w;
+  const d = building.d;
+  // Garages are always 1 story regardless of what the agent passed; they
+  // shouldn't punch through to a 30ft tower.
+  const height = STORY_HEIGHT_FT;
+  const cx = building.x + w / 2;
+  const cz = building.z + d / 2;
+  const ref = useGrowUp<THREE.Group>(1.0, delay);
+
+  const preset = presetFor(building.material);
+  const bodyColor = valid ? preset.body : COLORS.buildingInvalid;
+  const edgeColor = valid ? preset.edge : COLORS.buildingInvalid;
+  const doorColor = "#2d2d31";
+  const slatColor = "#4a4a4e";
+  const trimColor = "#1f1f22";
+  const roofColor = preset.roof;
+
+  // Overhead door is sized to the building's car-count: a 22ft-wide garage =
+  // double car (16ft door); narrower = single (8ft door).
+  const isDouble = w >= 18;
+  const doorW = isDouble ? Math.min(w - 4, 16) : Math.min(w - 4, 8);
+  const doorH = Math.min(8, height - 1.5);
+  const slats = 8;
+
+  return (
+    <group ref={ref} position={[cx, Y.lotTop, cz]}>
+      {/* Main mass */}
+      <mesh position={[0, height / 2, 0]} castShadow receiveShadow>
+        <boxGeometry args={[w, height, d]} />
+        <meshStandardMaterial color={bodyColor} roughness={0.9} metalness={0.02} />
+        <Edges color={edgeColor} lineWidth={0.6} />
+      </mesh>
+
+      {/* Roll-up overhead door on the front face (-z) */}
+      <mesh position={[0, doorH / 2 + 0.4, -d / 2 + 0.04]}>
+        <boxGeometry args={[doorW, doorH, 0.18]} />
+        <meshStandardMaterial color={doorColor} roughness={0.6} />
+        <Edges color={trimColor} lineWidth={0.5} />
+      </mesh>
+      {/* Suggestive horizontal slat lines on the door */}
+      {Array.from({ length: slats }).map((_, j) => (
+        <mesh
+          key={`slat-${j}`}
+          position={[0, 0.4 + ((j + 1) * doorH) / (slats + 1), -d / 2 - 0.06]}
+        >
+          <planeGeometry args={[doorW - 0.4, 0.06]} />
+          <meshBasicMaterial color={slatColor} />
+        </mesh>
+      ))}
+      {/* Door frame trim */}
+      <mesh position={[0, doorH / 2 + 0.4, -d / 2 - 0.05]}>
+        <planeGeometry args={[doorW + 0.6, doorH + 0.5]} />
+        <meshBasicMaterial color={trimColor} />
+      </mesh>
+
+      {/* One small side window (right face) */}
+      <mesh
+        position={[w / 2 + 0.04, height * 0.65, 0]}
+        rotation={[0, Math.PI / 2, 0]}
+      >
+        <planeGeometry args={[2.2, 1.4]} />
+        <meshStandardMaterial
+          color={"#7a9bb0"}
+          emissive={"#5a8baf"}
+          emissiveIntensity={0.25}
+          roughness={0.25}
+        />
+      </mesh>
+
+      {/* Flat roof slab */}
+      <mesh position={[0, height + 0.25, 0]} castShadow receiveShadow>
+        <boxGeometry args={[w + 0.4, 0.5, d + 0.4]} />
+        <meshStandardMaterial color={roofColor} roughness={0.85} />
+        <Edges color={edgeColor} lineWidth={0.5} />
+      </mesh>
+
+      <Html position={[0, height + 4, 0]} center>
+        <div className="whitespace-nowrap rounded bg-paper px-2 py-1 font-mono text-[10px] uppercase tracking-wider text-ink shadow-md">
+          {Math.round(w)}×{Math.round(d)} ft · {isDouble ? "2-car garage" : "garage"}
+        </div>
+      </Html>
+    </group>
+  );
+}
+
+// ── HouseBuilding ─────────────────────────────────────────────────────────
+// Wraps DefaultBuilding (which already does gable roofs and proper windows)
+// and adds residential signature features the default massing can't express:
+// front porch with posts + porch roof, and a small chimney on the roof for
+// low-rise houses. Inherits the floor-reveal interaction from DefaultBuilding
+// (the overlay sits at ground level so it doesn't need to lift with floors).
+function HouseBuilding(props: BuildingProps) {
+  return (
+    <>
+      <DefaultBuilding {...props} />
+      {props.valid && <HouseOverlay {...props} />}
+    </>
+  );
+}
+
+function HouseOverlay({ building, delay = 0.1 }: BuildingProps) {
+  const cx = building.x + building.w / 2;
+  const cz = building.z + building.d / 2;
+  const ref = useGrowUp<THREE.Group>(1.0, delay);
+
+  // Porch sits on the front face (-z in local coords). Scale to building size
+  // so a tiny ADU gets a tiny stoop, not a wraparound veranda.
+  const porchD = Math.min(7, Math.max(3.5, building.d * 0.14));
+  const porchW = Math.min(building.w * 0.55, 18);
+  const slabH = 0.6;
+  const postH = 8.4;
+  const postW = 0.6;
+  const porchFrontZ = -building.d / 2 - porchD;
+
+  return (
+    <group ref={ref} position={[cx, Y.lotTop, cz]}>
+      {/* Porch slab */}
+      <mesh
+        position={[0, slabH / 2, -building.d / 2 - porchD / 2]}
+        receiveShadow
+      >
+        <boxGeometry args={[porchW, slabH, porchD]} />
+        <meshStandardMaterial color={"#bdb3a2"} roughness={0.95} />
+        <Edges color={"#5a5045"} lineWidth={0.4} />
+      </mesh>
+
+      {/* Steps in front of the porch — two thin slabs */}
+      {[0, 1].map((i) => (
+        <mesh
+          key={`step-${i}`}
+          position={[0, slabH * (0.66 - i * 0.33), porchFrontZ - 0.4 - i * 0.6]}
+          receiveShadow
+        >
+          <boxGeometry args={[porchW * 0.55, slabH * 0.5, 1.1]} />
+          <meshStandardMaterial color={"#a89a86"} roughness={0.95} />
+          <Edges color={"#4a423a"} lineWidth={0.3} />
+        </mesh>
+      ))}
+
+      {/* Porch posts */}
+      {[-porchW / 2 + 0.7, porchW / 2 - 0.7].map((px, i) => (
+        <mesh
+          key={`post-${i}`}
+          position={[px, slabH + postH / 2, porchFrontZ + 0.5]}
+          castShadow
+        >
+          <boxGeometry args={[postW, postH, postW]} />
+          <meshStandardMaterial color={"#5a4029"} roughness={0.85} />
+        </mesh>
+      ))}
+
+      {/* Porch roof slab (overhang) */}
+      <mesh
+        position={[
+          0,
+          slabH + postH + 0.3,
+          -building.d / 2 - porchD / 2 + 0.4,
+        ]}
+        castShadow
+      >
+        <boxGeometry args={[porchW + 0.6, 0.55, porchD - 0.4]} />
+        <meshStandardMaterial color={"#3d2418"} roughness={0.85} />
+        <Edges color={"#1f140c"} lineWidth={0.4} />
+      </mesh>
+
+      {/* Chimney — only for low-rise houses where the gable roof is rendered */}
+      {building.stories <= 2 && (() => {
+        const chimneyW = 1.6;
+        const chimneyD = 1.2;
+        const chimneyBase = building.stories * STORY_HEIGHT_FT;
+        const chimneyH = 5;
+        // Push it off-center toward the back-side so it doesn't clash with
+        // the door / front face.
+        const chimneyX = building.w * 0.25;
+        const chimneyZ = building.d * 0.15;
+        return (
+          <mesh
+            position={[chimneyX, chimneyBase + chimneyH / 2 + 1.5, chimneyZ]}
+            castShadow
+          >
+            <boxGeometry args={[chimneyW, chimneyH, chimneyD]} />
+            <meshStandardMaterial color={"#6b4a35"} roughness={0.95} />
+            <Edges color={"#2a1a14"} lineWidth={0.4} />
+          </mesh>
+        );
+      })()}
+    </group>
+  );
+}
+
+// ── ApartmentBuilding ─────────────────────────────────────────────────────
+// Wraps DefaultBuilding and adds the visual signature of a multi-unit res
+// building: a lobby canopy at the front entrance and small balcony platforms
+// with railings on each upper floor's front-center.
+function ApartmentBuilding(props: BuildingProps) {
+  return (
+    <>
+      <DefaultBuilding {...props} />
+      {props.valid && <ApartmentOverlay {...props} />}
+    </>
+  );
+}
+
+function ApartmentOverlay({ building, delay = 0.1 }: BuildingProps) {
+  const cx = building.x + building.w / 2;
+  const cz = building.z + building.d / 2;
+  const ref = useGrowUp<THREE.Group>(1.0, delay);
+  const stories = building.stories;
+
+  // Lobby canopy — modest overhang at the front-center entrance
+  const canopyW = Math.min(building.w * 0.28, 14);
+  const canopyD = 4.5;
+  const canopyY = 9.3;
+  const canopyT = 0.4;
+
+  // Balcony platform per upper story (skip ground floor)
+  const balW = Math.min(building.w * 0.18, 9);
+  const balD = 3.2;
+
+  return (
+    <group ref={ref} position={[cx, Y.lotTop, cz]}>
+      {/* Lobby canopy */}
+      <mesh
+        position={[0, canopyY, -building.d / 2 - canopyD / 2 + 0.2]}
+        castShadow
+      >
+        <boxGeometry args={[canopyW, canopyT, canopyD]} />
+        <meshStandardMaterial
+          color={"#2a2a2e"}
+          roughness={0.45}
+          metalness={0.45}
+        />
+        <Edges color={"#0a0a0a"} lineWidth={0.4} />
+      </mesh>
+      {/* Two thin canopy support rods */}
+      {[-canopyW / 2 + 0.6, canopyW / 2 - 0.6].map((rx, i) => (
+        <mesh
+          key={`rod-${i}`}
+          position={[
+            rx,
+            canopyY / 2 + 0.5,
+            -building.d / 2 - canopyD + 0.4,
+          ]}
+          castShadow
+        >
+          <boxGeometry args={[0.18, canopyY - 0.5, 0.18]} />
+          <meshStandardMaterial color={"#1a1a1c"} roughness={0.4} metalness={0.7} />
+        </mesh>
+      ))}
+
+      {/* Balconies on upper floors */}
+      {Array.from({ length: Math.max(0, stories - 1) }).map((_, i) => {
+        const story = i + 1;
+        const y = story * STORY_HEIGHT_FT + 0.3;
+        return (
+          <Fragment key={`bal-${story}`}>
+            {/* Platform */}
+            <mesh
+              position={[0, y, -building.d / 2 - balD / 2]}
+              castShadow
+              receiveShadow
+            >
+              <boxGeometry args={[balW, 0.3, balD]} />
+              <meshStandardMaterial color={"#bdb6a4"} roughness={0.92} />
+              <Edges color={"#5a544a"} lineWidth={0.3} />
+            </mesh>
+            {/* Railing — front bar */}
+            <mesh
+              position={[0, y + 1.6, -building.d / 2 - balD]}
+              castShadow
+            >
+              <boxGeometry args={[balW, 3.2, 0.1]} />
+              <meshStandardMaterial
+                color={"#1f2228"}
+                roughness={0.4}
+                metalness={0.55}
+              />
+            </mesh>
+            {/* Railing — left side bar */}
+            <mesh
+              position={[-balW / 2, y + 1.6, -building.d / 2 - balD / 2]}
+            >
+              <boxGeometry args={[0.1, 3.2, balD]} />
+              <meshStandardMaterial
+                color={"#1f2228"}
+                roughness={0.4}
+                metalness={0.55}
+              />
+            </mesh>
+            {/* Railing — right side bar */}
+            <mesh
+              position={[balW / 2, y + 1.6, -building.d / 2 - balD / 2]}
+            >
+              <boxGeometry args={[0.1, 3.2, balD]} />
+              <meshStandardMaterial
+                color={"#1f2228"}
+                roughness={0.4}
+                metalness={0.55}
+              />
+            </mesh>
+          </Fragment>
+        );
+      })}
     </group>
   );
 }
@@ -2910,7 +3613,7 @@ function DefaultBuilding({
   const cz = building.z + building.d / 2;
 
   // Anchor at the base so growth scales upward from the lot, not the center.
-  const ref = useGrowUp<THREE.Group>(0.75, delay);
+  const ref = useGrowUp<THREE.Group>(1.0, delay);
   const preset = presetFor(building.material);
 
   // ── Floor reveal: when a story of THIS building is selected, the body is
@@ -2947,6 +3650,7 @@ function DefaultBuilding({
             storyIndex: activeSplit,
             structureType: building.structure_type ?? "office",
             material: building.material ?? "concrete",
+            program: building.program,
           })
         ]
       : undefined;
@@ -3816,6 +4520,97 @@ function TiledFenceRun({
         <primitive key={i} object={t} />
       ))}
     </>
+  );
+}
+
+// Pool — recessed water surface in the lot with a thin coping border. Uses
+// SiteworkLayer's coordinate frame: lot origin sits at (-w/2, 0, -d/2) of
+// the parent group, so we shift by the pool's front-left corner here.
+function PoolMesh({ pool, delay = 0 }: { pool: Pool; delay?: number }) {
+  const { x, z, w, d, shape } = pool;
+  const cx = x + w / 2;
+  const cz = z + d / 2;
+  const ref = useFadeIn<THREE.Group>(0.4, delay);
+
+  // Y stack:
+  //   lotTop = 0.12, copingTop = lotTop + 0.05, waterY = lotTop - 0.04
+  // (water surface sits below the coping, suggesting a recessed pool)
+  const copingT = 0.18;
+  const copingY = Y.lotTop + copingT / 2 + 0.005;
+  const waterY = Y.lotTop - 0.05;
+  const copingW = 1.2;
+
+  const waterColor = "#2c8fb8";
+  const waterEmissive = "#65b8d8";
+  const copingColor = "#e2dccb";
+  const copingEdge = "#8a8470";
+
+  return (
+    <group ref={ref} position={[cx, 0, cz]}>
+      {shape === "round" ? (
+        <>
+          {/* Coping ring */}
+          <mesh position={[0, copingY, 0]} receiveShadow>
+            <ringGeometry args={[Math.min(w, d) / 2 - 0.02, Math.min(w, d) / 2 + copingW, 48]} />
+            <meshStandardMaterial color={copingColor} roughness={0.9} side={THREE.DoubleSide} />
+          </mesh>
+          {/* Water disc */}
+          <mesh position={[0, waterY, 0]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow>
+            <circleGeometry args={[Math.min(w, d) / 2 - 0.02, 48]} />
+            <meshStandardMaterial
+              color={waterColor}
+              emissive={waterEmissive}
+              emissiveIntensity={0.18}
+              roughness={0.18}
+              metalness={0.25}
+            />
+          </mesh>
+        </>
+      ) : (
+        <>
+          {/* Coping frame — four thin slabs around the pool perimeter */}
+          {/* North (front, -z) */}
+          <mesh position={[0, copingY, -d / 2 - copingW / 2 + 0.02]} receiveShadow>
+            <boxGeometry args={[w + copingW * 2, copingT, copingW]} />
+            <meshStandardMaterial color={copingColor} roughness={0.9} />
+            <Edges color={copingEdge} lineWidth={0.3} />
+          </mesh>
+          {/* South (back, +z) */}
+          <mesh position={[0, copingY, d / 2 + copingW / 2 - 0.02]} receiveShadow>
+            <boxGeometry args={[w + copingW * 2, copingT, copingW]} />
+            <meshStandardMaterial color={copingColor} roughness={0.9} />
+            <Edges color={copingEdge} lineWidth={0.3} />
+          </mesh>
+          {/* East (right, +x) */}
+          <mesh position={[w / 2 + copingW / 2 - 0.02, copingY, 0]} receiveShadow>
+            <boxGeometry args={[copingW, copingT, d]} />
+            <meshStandardMaterial color={copingColor} roughness={0.9} />
+            <Edges color={copingEdge} lineWidth={0.3} />
+          </mesh>
+          {/* West (left, -x) */}
+          <mesh position={[-w / 2 - copingW / 2 + 0.02, copingY, 0]} receiveShadow>
+            <boxGeometry args={[copingW, copingT, d]} />
+            <meshStandardMaterial color={copingColor} roughness={0.9} />
+            <Edges color={copingEdge} lineWidth={0.3} />
+          </mesh>
+          {/* Water surface */}
+          <mesh
+            position={[0, waterY, 0]}
+            rotation={[-Math.PI / 2, 0, 0]}
+            receiveShadow
+          >
+            <planeGeometry args={[w - 0.04, d - 0.04]} />
+            <meshStandardMaterial
+              color={waterColor}
+              emissive={waterEmissive}
+              emissiveIntensity={0.18}
+              roughness={0.18}
+              metalness={0.25}
+            />
+          </mesh>
+        </>
+      )}
+    </group>
   );
 }
 

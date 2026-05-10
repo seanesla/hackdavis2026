@@ -1,5 +1,5 @@
 "use client";
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, type RefObject } from "react";
 import { motion } from "framer-motion";
 import { useRouter } from "next/navigation";
 import PromptDropdown from "./PromptDropdown";
@@ -21,12 +21,23 @@ type Props = {
   value: string;
   onValueChange: (v: string) => void;
   onSubmit: () => void;
+  inputRef?: RefObject<HTMLInputElement | null>;
+  voiceSupported?: boolean;
+  onVoiceMode?: (mode: "interview" | "freestyle") => void;
 };
 
-export default function PromptBar({ value, onValueChange, onSubmit }: Props) {
+export default function PromptBar({
+  value,
+  onValueChange,
+  onSubmit,
+  inputRef: externalInputRef,
+  voiceSupported = false,
+  onVoiceMode,
+}: Props) {
   const [focused, setFocused] = useState(false);
   const [dropdownOpen, setDropdownOpen] = useState(false);
-  const inputRef = useRef<HTMLInputElement>(null);
+  const localInputRef = useRef<HTMLInputElement>(null);
+  const inputRef = externalInputRef ?? localInputRef;
   const wrapperRef = useRef<HTMLDivElement>(null);
   const router = useRouter();
 
@@ -90,7 +101,7 @@ export default function PromptBar({ value, onValueChange, onSubmit }: Props) {
         <button
           onClick={handleSubmit}
           aria-label="plan"
-          className="font-mono text-xs text-mute hover:text-accent transition-colors"
+          className="font-mono text-xs text-mute hover:text-accent transition-colors cursor-pointer"
         >
           enter ↵
         </button>

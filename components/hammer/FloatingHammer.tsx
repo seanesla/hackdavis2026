@@ -17,10 +17,16 @@ const SIDEBAR_SCALE = 1;
 
 // Used while the sidebar compartment hasn't mounted yet (e.g. on the landing
 // page, or the first frame after navigating to /plan). Matches the
-// `h-[400px]` div in `components/plan/SideRail.tsx` so the canvas size is
+// `h-[260px]` div in `components/plan/SideRail.tsx` so the canvas size is
 // stable across slots.
 const FALLBACK_W = 400;
-const FALLBACK_H = 400;
+const FALLBACK_H = 260;
+
+// Horizontal nudge applied to the center pose on /plan, so the drafting
+// hammer reads as centered within the *visible scene area* (right of the
+// SideRail) instead of within the whole viewport. The SideRail occupies
+// `left-4 w-[400px]` = 16+400 = 416px on the left; half that is 208.
+const PLAN_CENTER_NUDGE_X = 208;
 
 type Slot = "center" | "sidebar" | "hidden";
 
@@ -54,38 +60,42 @@ export default function FloatingHammer() {
     return () => window.removeEventListener("resize", updateViewport);
   }, []);
 
-  // Track the SideRail's hammer compartment. The SideRail slides in over
-  // 600ms via a CSS transform, which moves the slot's screen position every
-  // frame without firing any layout/resize events — so we poll on rAF for
-  // the first second to follow it, then stop. ResizeObserver wouldn't help
-  // here because transforms don't change the layout box.
+  // Track the SideRail's hammer compartment continuously while on /plan.
+  // The SideRail slides in via CSS transform — transforms move the slot's
+  // screen position every frame without firing resize or ResizeObserver
+  // events, so we have to poll. Earlier this was time-bounded to 1s to
+  // "save work," but that left slotRect stale forever after the cap, so
+  // any later layout shift (font loads, dev-tools opening, browser zoom,
+  // sidebar content reflow) drifted the hammer off-center until a window
+  // resize. Polling on rAF forever is microseconds per frame and the
+  // shallow-equal short-circuit below means React only re-renders when
+  // the rect actually changes — no perf cost.
+  // On leaving /plan, reset slotRect to the fallback so the centered pose
+  // is deterministic across visits.
   useEffect(() => {
-    const measure = () => {
-      const el = document.getElementById("hammer-slot");
-      if (!el) return;
-      const r = el.getBoundingClientRect();
-      setSlotRect((prev) =>
-        prev.x === r.left && prev.y === r.top &&
-        prev.w === r.width && prev.h === r.height
-          ? prev
-          : { x: r.left, y: r.top, w: r.width, h: r.height },
-      );
-    };
+    if (!pathname?.startsWith("/plan")) {
+      setSlotRect({ x: 0, y: 0, w: FALLBACK_W, h: FALLBACK_H });
+      return;
+    }
 
-    const startTime = performance.now();
     let rafId = 0;
     const pollFrame = () => {
-      measure();
-      if (performance.now() - startTime < 1000) {
-        rafId = requestAnimationFrame(pollFrame);
+      const el = document.getElementById("hammer-slot");
+      if (el) {
+        const r = el.getBoundingClientRect();
+        setSlotRect((prev) =>
+          prev.x === r.left && prev.y === r.top &&
+          prev.w === r.width && prev.h === r.height
+            ? prev
+            : { x: r.left, y: r.top, w: r.width, h: r.height },
+        );
       }
+      rafId = requestAnimationFrame(pollFrame);
     };
     rafId = requestAnimationFrame(pollFrame);
 
-    window.addEventListener("resize", measure);
     return () => {
       cancelAnimationFrame(rafId);
-      window.removeEventListener("resize", measure);
     };
   }, [pathname]);
 
@@ -94,6 +104,8 @@ export default function FloatingHammer() {
     if (pathname?.startsWith("/plan")) return "sidebar";
     return "hidden";
   }, [waiting, pathname]);
+
+  const onPlan = pathname?.startsWith("/plan") ?? false;
 
   // Don't start the hammer chop until the floating hammer has finished its
   // 750ms fly-to-sidebar animation. Otherwise it strikes mid-flight, which
@@ -111,10 +123,12 @@ export default function FloatingHammer() {
 
   const { centerX, centerY } = useMemo(
     () => ({
-      centerX: (vw - slotRect.w * CENTER_SCALE) / 2,
+      centerX:
+        (vw - slotRect.w * CENTER_SCALE) / 2 +
+        (onPlan ? PLAN_CENTER_NUDGE_X : 0),
       centerY: (vh - slotRect.h * CENTER_SCALE) / 2,
     }),
-    [vw, vh, slotRect.w, slotRect.h],
+    [vw, vh, slotRect.w, slotRect.h, onPlan],
   );
 
   const target = useMemo(() => {
@@ -154,9 +168,17 @@ export default function FloatingHammer() {
 
   if (!shouldRender) return null;
 
+  // r3f's <canvas> defaults to pointer-events: auto, which would block
+  // clicks underneath the floating hammer (the parent's pointer-events:
+  // none doesn't propagate, since pointer-events isn't inherited). Force
+  // it off unless the hammer is in interactive sidebar mode.
+  const canvasInteractive = slot === "sidebar";
+
   return (
     <motion.div
-      className="fixed pointer-events-none z-[90]"
+      className={`fixed pointer-events-none z-[90] [&_canvas]:!w-full [&_canvas]:!h-full ${
+        canvasInteractive ? "" : "[&_*]:!pointer-events-none"
+      }`}
       style={{
         top: 0,
         left: 0,

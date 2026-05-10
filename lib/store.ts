@@ -83,10 +83,24 @@ type State = {
   interviewAnswers: InterviewAnswers;
   voiceSupported: boolean;
   muted: boolean;
+  voiceModifyOpen: boolean;
+
+  // Scene camera controls — driven by the floating SceneTools toolbar.
+  // autoRotate: source of truth for OrbitControls.autoRotate (replaces the
+  // old local "interacted" flag in Scene.tsx).
+  // resetTick: bumped to ask CameraRig to re-lerp to its computed targetPos.
+  // viewMode: switches CameraRig's targetPos between perspective 3/4 and a
+  // pure overhead "plan" view.
+  // gridVisible: toggles the drafting grid (useful for clean screenshots).
+  autoRotate: boolean;
+  resetTick: number;
+  viewMode: "perspective" | "top";
+  gridVisible: boolean;
 
   setPrompt: (s: string) => void;
   setLoading: (b: boolean) => void;
   runFromPrompt: (p: string) => Promise<void>;
+  modifyFromPrompt: (p: string) => Promise<void>;
   runFromInterview: (answers: InterviewAnswers) => Promise<void>;
   replayMockPlan: () => void;
   loadImportedPlan: (data: { plan: SitePlan; steps?: Step[]; prompt?: string }) => void;
@@ -111,8 +125,14 @@ type State = {
   nextQuestion: () => void;
   setAnswer: <K extends InterviewKey>(key: K, val: InterviewAnswers[K]) => void;
   resetVoice: () => void;
+  resetTranscript: () => void;
   setVoiceSupported: (b: boolean) => void;
   setMuted: (m: boolean) => void;
+  setVoiceModifyOpen: (b: boolean) => void;
+  setAutoRotate: (b: boolean) => void;
+  bumpResetTick: () => void;
+  setViewMode: (m: "perspective" | "top") => void;
+  setGridVisible: (b: boolean) => void;
 };
 
 const STEP_INTERVAL_MS = 800;
@@ -222,10 +242,12 @@ export const useStore = create<State>((set, get) => {
       data = await res.json();
     } catch (err) {
       if (myRunId !== runId) return;
+      const message = err instanceof Error ? err.message : "Network error";
       set({
         running: false,
         loading: false,
-        error: err instanceof Error ? err.message : "Network error",
+        error: message,
+        steps: [{ tool: "error", note: message, ok: false }],
       });
       return;
     }
@@ -252,6 +274,7 @@ export const useStore = create<State>((set, get) => {
         loading: false,
         plan: data.plan ?? null,
         error: "Agent returned no steps.",
+        steps: [{ tool: "error", note: "Agent returned no steps.", ok: false }],
       });
       return;
     }
@@ -282,6 +305,127 @@ export const useStore = create<State>((set, get) => {
     }
 
     // Replay stages with intervals so per-step drop animations land cleanly.
+    stages.forEach((stage, i) => {
+      setTimeout(() => {
+        if (myRunId !== runId) return;
+        set((s) => ({
+          steps: [...s.steps, stage.step],
+          plan: stage.plan,
+        }));
+        if (i === stages.length - 1) {
+          set({ running: false, loading: false });
+        }
+      }, STEP_INTERVAL_MS * (i + 1));
+    });
+  };
+
+  const modifyFromPrompt = async (p: string): Promise<void> => {
+    if (get().running) return;
+    const current = get().plan;
+    if (!current) {
+      // No existing plan to modify — fall through to a fresh draft.
+      return runFromPrompt(p);
+    }
+    const myRunId = ++runId;
+
+    // Modify mode preserves plan/floorPlans/interiors. Existing building
+    // indices stay stable because the route refuses set_lot and other tools
+    // only append, so cached interiors for buildings 0..N-1 remain valid.
+    set({
+      running: true,
+      error: null,
+      prompt: p,
+    });
+
+    let data: {
+      ok: boolean;
+      stages?: Stage[];
+      plan?: SitePlan | null;
+      error?: string;
+      retryAfterSeconds?: number | null;
+    };
+
+    try {
+      const history = (await getPlans()).map((s) => ({
+        prompt: s.prompt,
+        sitePlan: s.sitePlan,
+      }));
+      const res = await fetch("/api/plan", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          prompt: p,
+          basePlan: current,
+          history,
+          threadId: getThreadId(),
+        }),
+      });
+      data = await res.json();
+    } catch (err) {
+      if (myRunId !== runId) return;
+      const message = err instanceof Error ? err.message : "Network error";
+      set((s) => ({
+        running: false,
+        loading: false,
+        error: message,
+        steps: [...s.steps, { tool: "error", note: message, ok: false }],
+      }));
+      return;
+    }
+
+    if (myRunId !== runId) return;
+
+    if (!data.ok) {
+      const message = data.retryAfterSeconds
+        ? `${data.error} Retry in ~${data.retryAfterSeconds}s.`
+        : data.error ?? "Modify failed.";
+      set((s) => ({
+        running: false,
+        loading: false,
+        error: message,
+        steps: [...s.steps, { tool: "error", note: message, ok: false }],
+      }));
+      return;
+    }
+
+    const stages = data.stages ?? [];
+    if (stages.length === 0) {
+      set((s) => ({
+        running: false,
+        loading: false,
+        error: "Agent returned no steps.",
+        steps: [
+          ...s.steps,
+          { tool: "error", note: "Agent returned no steps.", ok: false },
+        ],
+      }));
+      return;
+    }
+
+    const finalPlan = stages[stages.length - 1]?.plan ?? data.plan ?? current;
+    if (finalPlan) {
+      void savePlan(p, finalPlan);
+      void fetch("/api/save-memory", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          userId: getUserId(),
+          threadId: getThreadId(),
+          prompt: p,
+          sitePlan: finalPlan,
+        }),
+      })
+        .then((r) => r.json())
+        .then((d) => {
+          if (d?.threadId && typeof d.threadId === "string") {
+            setThreadId(d.threadId);
+          }
+        })
+        .catch(() => {});
+    }
+
+    // Append new stages on top of existing steps so the modify trail is
+    // visible alongside the original draft.
     stages.forEach((stage, i) => {
       setTimeout(() => {
         if (myRunId !== runId) return;
@@ -355,6 +499,11 @@ export const useStore = create<State>((set, get) => {
     interviewAnswers: {},
     voiceSupported: false,
     muted: false,
+    voiceModifyOpen: false,
+    autoRotate: true,
+    resetTick: 0,
+    viewMode: "perspective",
+    gridVisible: true,
 
     setPrompt: (s) => set({ prompt: s }),
     setLoading: (b) => set({ loading: b }),
@@ -374,6 +523,7 @@ export const useStore = create<State>((set, get) => {
     },
 
     runFromPrompt,
+    modifyFromPrompt,
     replayMockPlan,
 
     loadImportedPlan: (data) => {
@@ -533,6 +683,7 @@ export const useStore = create<State>((set, get) => {
         storyIndex,
         structureType: b.structure_type ?? "office",
         material: b.material ?? "concrete",
+        program: b.program,
       });
 
       const existing = interiors[key];
@@ -611,6 +762,7 @@ export const useStore = create<State>((set, get) => {
             storyIndex: si,
             structureType: b.structure_type ?? "office",
             material: b.material ?? "concrete",
+            program: b.program,
           });
           if (seen.has(key)) continue;
           seen.add(key);
@@ -652,7 +804,20 @@ export const useStore = create<State>((set, get) => {
         loading: false,
         error: null,
       }),
+    // Lighter reset used when entering/leaving the in-panel modify-voice
+    // overlay — clears the conversation but keeps the existing plan intact.
+    resetTranscript: () =>
+      set({
+        transcript: [],
+        interviewIndex: 0,
+        interviewAnswers: {},
+      }),
     setVoiceSupported: (b) => set({ voiceSupported: b }),
     setMuted: (m) => set({ muted: m }),
+    setVoiceModifyOpen: (b) => set({ voiceModifyOpen: b }),
+    setAutoRotate: (b) => set({ autoRotate: b }),
+    bumpResetTick: () => set((s) => ({ resetTick: s.resetTick + 1 })),
+    setViewMode: (m) => set({ viewMode: m }),
+    setGridVisible: (b) => set({ gridVisible: b }),
   };
 });
