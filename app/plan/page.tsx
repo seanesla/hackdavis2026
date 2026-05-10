@@ -21,8 +21,6 @@ function PlanInner() {
   const running = useStore((s) => s.running);
   const plan = useStore((s) => s.plan);
   const selectedFloor = useStore((s) => s.selectedFloor);
-  const fetchFloorPlan = useStore((s) => s.fetchFloorPlan);
-  const prefetchAllFloorPlans = useStore((s) => s.prefetchAllFloorPlans);
   const fetchInteriorFor = useStore((s) => s.fetchInteriorFor);
   const prefetchAllInteriors = useStore((s) => s.prefetchAllInteriors);
   const selectFloor = useStore((s) => s.selectFloor);
@@ -33,23 +31,21 @@ function PlanInner() {
     }
   }, [promptParam, prompt, running, runFromPrompt]);
 
-  // The moment the plan stops streaming, kick off floor-plan generation for
-  // every unique (footprint × story) so the user gets an instant reveal on
-  // click. Acts as the safety net too — even if prefetch hasn't finished by
-  // the time they click, the per-floor fetch is still idempotent.
+  // The moment the plan stops streaming, kick off interior generation for
+  // every unique (footprint × story) so the user gets an instant 3D reveal
+  // on click. Acts as the safety net too — even if prefetch hasn't finished
+  // by the time they click, the per-floor fetch below is still idempotent.
   useEffect(() => {
     if (!running && plan?.buildings && plan.buildings.length > 0) {
-      prefetchAllFloorPlans();
       prefetchAllInteriors();
     }
-  }, [running, plan, prefetchAllFloorPlans, prefetchAllInteriors]);
+  }, [running, plan, prefetchAllInteriors]);
 
   useEffect(() => {
     if (selectedFloor) {
-      fetchFloorPlan();
       fetchInteriorFor(selectedFloor.buildingIndex, selectedFloor.storyIndex);
     }
-  }, [selectedFloor, fetchFloorPlan, fetchInteriorFor]);
+  }, [selectedFloor, fetchInteriorFor]);
 
   // Escape closes the open floor.
   useEffect(() => {

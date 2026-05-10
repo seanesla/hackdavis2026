@@ -48,8 +48,6 @@ import {
   TARGET_FENCE_HEIGHT_FT,
   TREE_MODELS,
 } from "@/lib/modelConfig";
-import { floorPlanCacheKey } from "@/lib/floorPlanPrompt";
-import { useDataUrlTexture } from "@/lib/useDataUrlTexture";
 import {
   FLOOR_COLORS,
   FURNITURE_CATALOG,
@@ -2348,41 +2346,21 @@ function PavilionBuilding({
 
 // One LLM-placed piece of furniture rendered as a small set of colored boxes.
 // We special-case a handful of kinds to add recognizable details (pillows on
-// beds, tank on toilets, foliage on plants) without going overboard. Anything
-// else falls back to a single rounded box at the catalog dimensions.
-function FurnitureItemMesh({
-  item,
-  buildingW,
-  buildingD,
-}: {
-  item: FurnitureItem;
-  buildingW: number;
-  buildingD: number;
-}) {
+// beds, tank on toilets, foliage on plants) without going overboard.
+// Coordinates are building-local (front-left origin); the parent InteriorScene
+// applies the front-left → center shift, so the item uses item.x / item.z raw.
+function FurnitureItemMesh({ item }: { item: FurnitureItem }) {
   const spec = FURNITURE_CATALOG[item.kind];
   const color = FURNITURE_COLORS[item.kind];
-  // LLM coords are building-local (front-left origin); building's outer
-  // group renders centered, so shift to center-relative.
-  const lx = item.x - buildingW / 2;
-  const lz = item.z - buildingD / 2;
   const yaw = (item.yaw ?? 0) * (Math.PI / 180);
-
   const detail = renderKindDetail(item.kind, spec, color);
 
   return (
-    <group position={[lx, 0, lz]} rotation={[0, -yaw, 0]}>
+    <group position={[item.x, 0, item.z]} rotation={[0, -yaw, 0]}>
       {detail ?? (
-        <mesh
-          position={[0, spec.h / 2, 0]}
-          castShadow
-          receiveShadow
-        >
+        <mesh position={[0, spec.h / 2, 0]} castShadow receiveShadow>
           <boxGeometry args={[spec.w, spec.h, spec.d]} />
-          <meshStandardMaterial
-            color={color}
-            roughness={0.7}
-            metalness={0.05}
-          />
+          <meshStandardMaterial color={color} roughness={0.7} metalness={0.05} />
         </mesh>
       )}
     </group>
@@ -2581,25 +2559,338 @@ function renderKindDetail(
   }
 }
 
-function InteriorFurniture({
-  items,
+// Wall geometry. Walls run between rooms and stop short of full story height
+// so the lifted upper mass can show the cutaway clearly. A 3ft door opening
+// is cut from any wall segment between two rooms (auto-derived shared edge).
+const WALL_HEIGHT_FT = 9;
+const WALL_THICKNESS_FT = 0.4;
+const DOOR_WIDTH_FT = 3;
+const DOOR_HEIGHT_FT = 7;
+const WALL_COLOR = "#f0e9da";
+const WALL_TRIM_COLOR = "#d8ceb8";
+
+type WallSeg = {
+  // World-axis aligned. axis === "x" means the wall runs along x (its long
+  // dimension is x-aligned, normal points in z). "z" is the opposite.
+  axis: "x" | "z";
+  // Center of the wall segment in building-local coordinates.
+  cx: number;
+  cz: number;
+  // Wall length along its long axis.
+  length: number;
+  // True if a door opening should be cut at the segment's midpoint.
+  hasDoor: boolean;
+};
+
+// Auto-derive interior walls from the room rectangles. For every pair of
+// rooms that share an edge segment (same x or z line, with overlap on the
+// perpendicular axis), produce a wall along the overlap and stamp a door
+// in the middle. This keeps the LLM contract narrow (it just lays out
+// rectangles) while the renderer handles the geometry.
+function deriveWalls(
+  rooms: Room[],
+  buildingW: number,
+  buildingD: number
+): WallSeg[] {
+  const walls: WallSeg[] = [];
+  const eps = 0.5;
+  for (let i = 0; i < rooms.length; i++) {
+    for (let j = i + 1; j < rooms.length; j++) {
+      const a = rooms[i];
+      const b = rooms[j];
+      // Vertical shared edge (constant x, runs along z): a's east face meets b's west face (or vice versa).
+      if (Math.abs(a.x + a.w - b.x) < eps || Math.abs(b.x + b.w - a.x) < eps) {
+        const sharedX = Math.abs(a.x + a.w - b.x) < eps ? a.x + a.w : b.x + b.w;
+        const z0 = Math.max(a.z, b.z);
+        const z1 = Math.min(a.z + a.d, b.z + b.d);
+        if (z1 - z0 > 1) {
+          walls.push({
+            axis: "z",
+            cx: sharedX,
+            cz: (z0 + z1) / 2,
+            length: z1 - z0,
+            hasDoor: z1 - z0 >= DOOR_WIDTH_FT + 1,
+          });
+        }
+      }
+      // Horizontal shared edge (constant z, runs along x).
+      if (Math.abs(a.z + a.d - b.z) < eps || Math.abs(b.z + b.d - a.z) < eps) {
+        const sharedZ = Math.abs(a.z + a.d - b.z) < eps ? a.z + a.d : b.z + b.d;
+        const x0 = Math.max(a.x, b.x);
+        const x1 = Math.min(a.x + a.w, b.x + b.w);
+        if (x1 - x0 > 1) {
+          walls.push({
+            axis: "x",
+            cx: (x0 + x1) / 2,
+            cz: sharedZ,
+            length: x1 - x0,
+            hasDoor: x1 - x0 >= DOOR_WIDTH_FT + 1,
+          });
+        }
+      }
+    }
+  }
+
+  // Also draw walls along room edges that face open void inside the building
+  // (i.e. the LLM left a gap between rooms instead of tiling). Treat any
+  // room-edge segment that's NOT on the building exterior AND NOT shared
+  // with another room as a wall facing the void. For the demo scope we keep
+  // this simple: just check each of the 4 edges of each room for the
+  // exterior-vs-shared cases. Anything else gets a wall, no door.
+  for (const r of rooms) {
+    // North edge (z = r.z + r.d), runs along x.
+    addEdgeIfFacingVoid(r, "north", rooms, walls, buildingW, buildingD);
+    addEdgeIfFacingVoid(r, "south", rooms, walls, buildingW, buildingD);
+    addEdgeIfFacingVoid(r, "east", rooms, walls, buildingW, buildingD);
+    addEdgeIfFacingVoid(r, "west", rooms, walls, buildingW, buildingD);
+  }
+
+  return walls;
+}
+
+function addEdgeIfFacingVoid(
+  r: Room,
+  side: "north" | "south" | "east" | "west",
+  rooms: Room[],
+  walls: WallSeg[],
+  bw: number,
+  bd: number
+) {
+  const eps = 0.5;
+  if (side === "north" || side === "south") {
+    const z = side === "north" ? r.z + r.d : r.z;
+    // On building exterior — exterior wall already drawn by the building shell.
+    if (z < eps || z > bd - eps) return;
+    // Find x-overlap with neighbors on the same z-line.
+    const segs: Array<[number, number]> = [[r.x, r.x + r.w]];
+    for (const o of rooms) {
+      if (o === r) continue;
+      const oZ = side === "north" ? o.z : o.z + o.d;
+      if (Math.abs(oZ - z) > eps) continue;
+      const ox0 = o.x;
+      const ox1 = o.x + o.w;
+      // Subtract overlap from segs.
+      const next: Array<[number, number]> = [];
+      for (const [a, b] of segs) {
+        if (ox1 <= a || ox0 >= b) {
+          next.push([a, b]);
+          continue;
+        }
+        if (ox0 > a) next.push([a, ox0]);
+        if (ox1 < b) next.push([ox1, b]);
+      }
+      segs.length = 0;
+      segs.push(...next);
+    }
+    for (const [a, b] of segs) {
+      if (b - a < 1) continue;
+      walls.push({
+        axis: "x",
+        cx: (a + b) / 2,
+        cz: z,
+        length: b - a,
+        hasDoor: false,
+      });
+    }
+  } else {
+    const x = side === "east" ? r.x + r.w : r.x;
+    if (x < eps || x > bw - eps) return;
+    const segs: Array<[number, number]> = [[r.z, r.z + r.d]];
+    for (const o of rooms) {
+      if (o === r) continue;
+      const oX = side === "east" ? o.x : o.x + o.w;
+      if (Math.abs(oX - x) > eps) continue;
+      const oz0 = o.z;
+      const oz1 = o.z + o.d;
+      const next: Array<[number, number]> = [];
+      for (const [a, b] of segs) {
+        if (oz1 <= a || oz0 >= b) {
+          next.push([a, b]);
+          continue;
+        }
+        if (oz0 > a) next.push([a, oz0]);
+        if (oz1 < b) next.push([oz1, b]);
+      }
+      segs.length = 0;
+      segs.push(...next);
+    }
+    for (const [a, b] of segs) {
+      if (b - a < 1) continue;
+      walls.push({
+        axis: "z",
+        cx: x,
+        cz: (a + b) / 2,
+        length: b - a,
+        hasDoor: false,
+      });
+    }
+  }
+}
+
+function WallSegment({ wall }: { wall: WallSeg }) {
+  // For walls without doors, render one solid box.
+  // For walls with doors, split into two segments leaving a 3ft gap centered.
+  const longAxisLen = wall.length;
+  const door = wall.hasDoor ? DOOR_WIDTH_FT : 0;
+  const sideLen = (longAxisLen - door) / 2;
+
+  const segs: Array<{
+    cx: number;
+    cz: number;
+    sizeX: number;
+    sizeZ: number;
+  }> = [];
+
+  if (!wall.hasDoor || sideLen <= 0) {
+    if (wall.axis === "x") {
+      segs.push({ cx: wall.cx, cz: wall.cz, sizeX: longAxisLen, sizeZ: WALL_THICKNESS_FT });
+    } else {
+      segs.push({ cx: wall.cx, cz: wall.cz, sizeX: WALL_THICKNESS_FT, sizeZ: longAxisLen });
+    }
+  } else if (wall.axis === "x") {
+    segs.push({
+      cx: wall.cx - door / 2 - sideLen / 2,
+      cz: wall.cz,
+      sizeX: sideLen,
+      sizeZ: WALL_THICKNESS_FT,
+    });
+    segs.push({
+      cx: wall.cx + door / 2 + sideLen / 2,
+      cz: wall.cz,
+      sizeX: sideLen,
+      sizeZ: WALL_THICKNESS_FT,
+    });
+    // Header (above the door opening) so the wall reads as a doorway, not a gap.
+    segs.push({
+      cx: wall.cx,
+      cz: wall.cz,
+      sizeX: door,
+      sizeZ: WALL_THICKNESS_FT,
+    });
+  } else {
+    segs.push({
+      cx: wall.cx,
+      cz: wall.cz - door / 2 - sideLen / 2,
+      sizeX: WALL_THICKNESS_FT,
+      sizeZ: sideLen,
+    });
+    segs.push({
+      cx: wall.cx,
+      cz: wall.cz + door / 2 + sideLen / 2,
+      sizeX: WALL_THICKNESS_FT,
+      sizeZ: sideLen,
+    });
+    segs.push({
+      cx: wall.cx,
+      cz: wall.cz,
+      sizeX: WALL_THICKNESS_FT,
+      sizeZ: door,
+    });
+  }
+
+  return (
+    <>
+      {segs.map((s, i) => {
+        // The third segment (when it exists) is the door header — render
+        // shorter and starting above the door height.
+        const isHeader = wall.hasDoor && i === 2;
+        const h = isHeader ? WALL_HEIGHT_FT - DOOR_HEIGHT_FT : WALL_HEIGHT_FT;
+        const yCenter = isHeader
+          ? DOOR_HEIGHT_FT + h / 2
+          : h / 2;
+        return (
+          <mesh
+            key={`wseg-${i}`}
+            position={[s.cx, yCenter, s.cz]}
+            castShadow
+            receiveShadow
+          >
+            <boxGeometry args={[s.sizeX, h, s.sizeZ]} />
+            <meshStandardMaterial
+              color={WALL_COLOR}
+              roughness={0.85}
+              metalness={0}
+            />
+          </mesh>
+        );
+      })}
+    </>
+  );
+}
+
+function RoomFloor({ room }: { room: Room }) {
+  const cx = room.x + room.w / 2;
+  const cz = room.z + room.d / 2;
+  const color = FLOOR_COLORS[room.floor] ?? "#dcd0b8";
+  return (
+    <group position={[cx, 0, cz]}>
+      <mesh
+        position={[0, 0.05, 0]}
+        rotation={[-Math.PI / 2, 0, 0]}
+        receiveShadow
+      >
+        <planeGeometry args={[room.w - 0.05, room.d - 0.05]} />
+        <meshStandardMaterial
+          color={color}
+          roughness={0.65}
+          metalness={0}
+        />
+      </mesh>
+      {/* Thin trim strip around the room perimeter — adds the architectural
+          "baseboard" read so floor patches don't look like flat color blocks. */}
+      <mesh position={[0, 0.06, -room.d / 2 + 0.08]}>
+        <boxGeometry args={[room.w, 0.12, 0.08]} />
+        <meshBasicMaterial color={WALL_TRIM_COLOR} toneMapped={false} />
+      </mesh>
+      <mesh position={[0, 0.06, room.d / 2 - 0.08]}>
+        <boxGeometry args={[room.w, 0.12, 0.08]} />
+        <meshBasicMaterial color={WALL_TRIM_COLOR} toneMapped={false} />
+      </mesh>
+      <mesh position={[-room.w / 2 + 0.08, 0.06, 0]}>
+        <boxGeometry args={[0.08, 0.12, room.d]} />
+        <meshBasicMaterial color={WALL_TRIM_COLOR} toneMapped={false} />
+      </mesh>
+      <mesh position={[room.w / 2 - 0.08, 0.06, 0]}>
+        <boxGeometry args={[0.08, 0.12, room.d]} />
+        <meshBasicMaterial color={WALL_TRIM_COLOR} toneMapped={false} />
+      </mesh>
+    </group>
+  );
+}
+
+function InteriorScene({
+  rooms,
+  furniture,
   buildingW,
   buildingD,
   groupRef,
 }: {
-  items: FurnitureItem[];
+  rooms: Room[];
+  furniture: FurnitureItem[];
   buildingW: number;
   buildingD: number;
   groupRef: React.RefObject<THREE.Group | null>;
 }) {
+  const walls = useMemo(
+    () => deriveWalls(rooms, buildingW, buildingD),
+    [rooms, buildingW, buildingD]
+  );
+  // All rooms are positioned in building-local coords (front-left origin), so
+  // the InteriorScene group is shifted to the building's center-relative frame.
+  const offset: [number, number, number] = [-buildingW / 2, 0, -buildingD / 2];
+
   return (
-    <group ref={groupRef} scale={[1, 0.0001, 1]}>
-      {items.map((item, i) => (
+    <group ref={groupRef} scale={[1, 0.0001, 1]} position={offset}>
+      {rooms.map((r, i) => (
+        <RoomFloor key={`room-${i}-${r.name}`} room={r} />
+      ))}
+      {walls.map((w, i) => (
+        <WallSegment key={`wall-${i}-${w.axis}-${w.cx.toFixed(1)}-${w.cz.toFixed(1)}`} wall={w} />
+      ))}
+      {furniture.map((item, i) => (
         <FurnitureItemMesh
-          key={`${item.kind}-${i}-${item.x.toFixed(1)}-${item.z.toFixed(1)}`}
+          key={`f-${item.kind}-${i}-${item.x.toFixed(1)}-${item.z.toFixed(1)}`}
           item={item}
-          buildingW={buildingW}
-          buildingD={buildingD}
         />
       ))}
     </group>
@@ -2643,47 +2934,7 @@ function DefaultBuilding({
 
   const upperRef = useRef<THREE.Group>(null);
   const liftValRef = useRef(0);
-  const furnitureGroupRef = useRef<THREE.Group | null>(null);
-  // We own the plate material directly so we can swap the map texture and
-  // call `needsUpdate = true` on it. Setting `map` declaratively via a JSX
-  // prop hits an R3F gotcha — when the prop transitions from null to a
-  // texture, the shader's USE_MAP define stays false from the initial mount
-  // and the floor plan never renders.
-  const plateMat = useMemo(() => {
-    return new THREE.MeshBasicMaterial({
-      color: "#f5f1e6",
-      transparent: true,
-      opacity: 0,
-      toneMapped: false,
-      depthWrite: false,
-    });
-  }, []);
-  // Shared material across all four outline edges so we animate opacity once.
-  const outlineMat = useMemo(() => {
-    return new THREE.MeshBasicMaterial({
-      color: accent,
-      transparent: true,
-      opacity: 0,
-      toneMapped: false,
-      depthWrite: false,
-    });
-  }, [accent]);
-  useEffect(
-    () => () => {
-      plateMat.dispose();
-      outlineMat.dispose();
-    },
-    [plateMat, outlineMat]
-  );
-
-  const floorPlans = useStore((s) => s.floorPlans);
-  const planRecord =
-    activeSplit !== null
-      ? floorPlans[floorPlanCacheKey(building, activeSplit)]
-      : undefined;
-  const planTexture = useDataUrlTexture(
-    planRecord?.status === "ready" ? planRecord.dataUrl : undefined
-  );
+  const interiorGroupRef = useRef<THREE.Group | null>(null);
 
   const interiors = useStore((s) => s.interiors);
   const interiorRecord =
@@ -2700,34 +2951,22 @@ function DefaultBuilding({
         ]
       : undefined;
 
-  // Bind the texture to the plate material when it arrives. needsUpdate
-  // forces shader recompile so the sampler is actually wired up.
-  useEffect(() => {
-    plateMat.map = planTexture ?? null;
-    plateMat.color.set(planTexture ? "#ffffff" : "#f5f1e6");
-    plateMat.needsUpdate = true;
-  }, [planTexture, plateMat]);
-
   useFrame((_, dt) => {
     const target = selectedStory !== null ? STORY_LIFT_FT : 0;
     const k = Math.min(1, dt * 4.5);
     liftValRef.current += (target - liftValRef.current) * k;
     if (upperRef.current) upperRef.current.position.y = liftValRef.current;
-    const plateTarget = selectedStory !== null ? 1 : 0;
-    plateMat.opacity += (plateTarget - plateMat.opacity) * k;
-    const ringTarget = selectedStory !== null ? 0.85 : 0;
-    outlineMat.opacity += (ringTarget - outlineMat.opacity) * k;
-    // Furniture grows out of the floor as the lift progresses, so the room
-    // populates beneath the rising upper mass instead of popping in suddenly.
-    // Hide immediately on deselect so the descending upper mass doesn't pass
-    // through full-height furniture.
-    if (furnitureGroupRef.current) {
+    // Interior scene grows out of the floor as the lift progresses, so the
+    // floor populates beneath the rising upper mass instead of popping in
+    // suddenly. Hide immediately on deselect so the descending upper mass
+    // doesn't pass through the full-height walls / furniture.
+    if (interiorGroupRef.current) {
       const liftProgress = liftValRef.current / STORY_LIFT_FT;
-      const furnTarget =
+      const target =
         selectedStory !== null ? Math.min(1, Math.max(0, liftProgress)) : 0;
-      const cur = furnitureGroupRef.current.scale.y;
-      const next = cur + (furnTarget - cur) * Math.min(1, dt * 6);
-      furnitureGroupRef.current.scale.y = Math.max(0.0001, next);
+      const cur = interiorGroupRef.current.scale.y;
+      const next = cur + (target - cur) * Math.min(1, dt * 6);
+      interiorGroupRef.current.scale.y = Math.max(0.0001, next);
     }
   });
 
@@ -2872,62 +3111,27 @@ function DefaultBuilding({
           already in cache by the time the user clicks. */}
       {split !== null && (
         <group position={[0, planeY, 0]}>
-          <mesh
-            rotation={[-Math.PI / 2, 0, 0]}
-            renderOrder={2}
-            material={plateMat}
-          >
-            <planeGeometry args={[building.w * 0.97, building.d * 0.97]} />
-          </mesh>
-
-          {(() => {
-            const halfW = (building.w * 0.97) / 2;
-            const halfD = (building.d * 0.97) / 2;
-            const t = 0.12;
-            const segs: {
-              size: [number, number, number];
-              pos: [number, number, number];
-            }[] = [
-              { size: [building.w * 0.97, 0.04, t], pos: [0, 0.006, -halfD] },
-              { size: [building.w * 0.97, 0.04, t], pos: [0, 0.006, +halfD] },
-              { size: [t, 0.04, building.d * 0.97], pos: [-halfW, 0.006, 0] },
-              { size: [t, 0.04, building.d * 0.97], pos: [+halfW, 0.006, 0] },
-            ];
-            return segs.map((s, i) => (
-              <mesh
-                key={`fp-edge-${i}`}
-                position={s.pos}
-                renderOrder={3}
-                material={outlineMat}
-              >
-                <boxGeometry args={s.size} />
-              </mesh>
-            ));
-          })()}
-
-          {/* 3D furniture — sits on top of the texture plate. Grows out of
-              the floor as the lift progresses (scale-Y in useFrame). Only
-              renders while the floor is actually selected so a deselect
-              doesn't leave full-height boxes for the upper mass to descend
-              through. */}
+          {/* Real 3D interior — colored room floors, auto-derived walls
+              with door cutouts between adjacent rooms, and furniture inside
+              each room. The whole scene grows up out of the cut surface as
+              the upper mass lifts. */}
           {selectedStory !== null &&
             interiorRecord?.status === "ready" &&
+            interiorRecord.rooms &&
             interiorRecord.furniture && (
-              <InteriorFurniture
-                items={interiorRecord.furniture}
+              <InteriorScene
+                rooms={interiorRecord.rooms}
+                furniture={interiorRecord.furniture}
                 buildingW={building.w}
                 buildingD={building.d}
-                groupRef={furnitureGroupRef}
+                groupRef={interiorGroupRef}
               />
             )}
 
-          {/* Tiny error label — only surfaces when the API actually fails so
-              the user knows to retry; otherwise the reveal stays clean. */}
-          {(planRecord?.status === "error" ||
-            interiorRecord?.status === "error") && (
+          {interiorRecord?.status === "error" && (
             <Html position={[0, 0.5, 0]} center>
               <div className="pointer-events-none whitespace-nowrap rounded bg-paper/95 px-2 py-1 font-mono text-[10px] uppercase tracking-[0.2em] text-rose-700 shadow-sm">
-                generation failed
+                interior generation failed
               </div>
             </Html>
           )}
