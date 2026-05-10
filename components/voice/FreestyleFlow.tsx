@@ -1,6 +1,5 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
-import { motion } from "framer-motion";
 import { useStore } from "@/lib/store";
 import { chatTurn } from "@/lib/agent";
 import {
@@ -11,6 +10,7 @@ import {
   useRecognizer,
 } from "@/lib/speech";
 import MuteToggle from "@/components/voice/MuteToggle";
+import ConversationScreen from "@/components/voice/ConversationScreen";
 
 const FINALIZE_RE = /\b(build it|build the|let'?s go|finalize|that'?s it|go ahead|make it|that's enough|do it|run it)\b/i;
 const MAX_EXCHANGES = 30;
@@ -271,76 +271,41 @@ export default function FreestyleFlow({ mode = "create", onClose }: Props) {
     done: "building",
   };
 
+  const lastAiText =
+    [...transcript].reverse().find((e) => e.who === "ai")?.text ?? "starting…";
+
+  const liveText =
+    phase === "listening" && muted
+      ? "mic muted — click the mic icon below to talk"
+      : phase === "listening" && !muted
+      ? recognizer.interim || (recognizer.listening ? "listening…" : "starting mic…")
+      : phase === "thinking"
+      ? "thinking…"
+      : phase === "speaking" || phase === "greeting"
+      ? "ai is speaking…"
+      : phase === "done"
+      ? "building your plan…"
+      : "…";
+
+  const liveTone: "user" | "ai" | "muted" =
+    phase === "listening" && !muted && recognizer.listening
+      ? "user"
+      : aiSpeaking || phase === "speaking" || phase === "thinking"
+      ? "ai"
+      : "muted";
+
   return (
-    <motion.div
-      initial={{ opacity: 0 }}
-      animate={{ opacity: phase === "done" ? 0 : 1 }}
-      transition={{ duration: phase === "done" ? 1.2 : 0.4 }}
-      className={`absolute inset-0 z-30 flex flex-col items-center justify-between px-6 py-10 ${
-        phase === "done" ? "pointer-events-none" : ""
-      }`}
-    >
-      <div className="w-full max-w-3xl flex items-start justify-between pointer-events-auto">
-        <span className="font-mono text-[10px] uppercase tracking-[0.25em] text-mute">
-          {mode === "modify" ? "modify" : "freestyle"} · {phaseLabel[phase]}
-        </span>
-      </div>
-
-      <div className="w-full max-w-3xl flex flex-col items-center gap-5 pointer-events-auto">
-        <div className="text-center font-mono text-base sm:text-lg text-paper px-5 py-4 rounded-md bg-ink/60 backdrop-blur-md border border-rule min-h-[3.5rem] min-w-[60%] flex items-center justify-center">
-          {phase === "listening" && muted && "mic muted — click the mic icon to talk"}
-          {phase === "listening" && !muted && (recognizer.interim || "listening…")}
-          {phase === "thinking" && "…"}
-          {(phase === "speaking" || phase === "greeting") &&
-            (transcript[transcript.length - 1]?.who === "ai"
-              ? transcript[transcript.length - 1]?.text
-              : "starting…")}
-          {phase === "done" && "building your plan…"}
-        </div>
-
-        <div className="flex items-center gap-2">
-          <span
-            className={`h-2 w-2 rounded-full ${
-              aiSpeaking
-                ? "bg-accent"
-                : recognizer.listening
-                ? "bg-accent animate-pulse"
-                : "bg-rule"
-            }`}
-          />
-          <span className="font-mono text-[10px] uppercase tracking-[0.2em] text-mute/60">
-            {aiSpeaking ? "ai" : recognizer.listening ? "you" : "idle"}
-          </span>
-        </div>
-
-        <span className="font-mono text-[10px] uppercase tracking-[0.2em] text-mute/60 mt-1">
-          say &quot;build it&quot; when you&apos;re ready
-        </span>
-      </div>
-
-      <div className="w-full max-w-3xl flex flex-col items-center gap-5 pointer-events-auto">
-        <div className="w-full rounded-md border border-rule bg-ink/40 backdrop-blur-md max-h-40 overflow-y-auto p-3 flex flex-col gap-1.5">
-          {transcript.length === 0 ? (
-            <span className="font-mono text-[11px] text-mute/60">
-              transcript will appear here…
-            </span>
-          ) : (
-            transcript.slice(-12).map((entry, i) => (
-              <div key={i} className="font-mono text-[11px] flex gap-2">
-                <span
-                  className={
-                    entry.who === "ai" ? "text-accent" : "text-mute"
-                  }
-                >
-                  {entry.who === "ai" ? "ai ›" : "you ›"}
-                </span>
-                <span className="text-paper/80">{entry.text}</span>
-              </div>
-            ))
-          )}
-        </div>
-
-        <div className="flex items-center gap-8">
+    <ConversationScreen
+      hidden={phase === "done"}
+      status={phaseLabel[phase]}
+      statusActive={phase === "listening" && !muted && recognizer.listening}
+      meta={<>{mode === "modify" ? "modify" : "freestyle"}</>}
+      highlight={lastAiText}
+      transcript={transcript}
+      liveText={liveText}
+      liveTone={liveTone}
+      controls={
+        <>
           <MuteToggle />
           <button
             onClick={() => {
@@ -356,8 +321,9 @@ export default function FreestyleFlow({ mode = "create", onClose }: Props) {
           >
             end ✕
           </button>
-        </div>
-      </div>
-    </motion.div>
+        </>
+      }
+      hint={<>say &quot;build it&quot; when you&apos;re ready</>}
+    />
   );
 }
