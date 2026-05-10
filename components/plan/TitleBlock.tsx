@@ -1,5 +1,5 @@
 "use client";
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useStore } from "@/lib/store";
 import { useCameraView } from "@/lib/cameraView";
 import { chooseScaleFt } from "./ScaleBar";
@@ -15,21 +15,29 @@ function makeSheetNumber(prompt: string) {
 
 // Engineering-drawing title block — the small information rectangle in the
 // corner of every CE deliverable. Project / Drawn / Date / Scale / Sheet.
+// Anchored at bottom-right, paired with the ScaleBar directly above it so
+// the visual scale bar and the textual scale read as a single legend block.
 export default function TitleBlock() {
   const prompt = useStore((s) => s.prompt);
   const distance = useCameraView((s) => s.distance);
   const fov = useCameraView((s) => s.fov);
   const canvasHeight = useCameraView((s) => s.canvasHeight);
 
-  const dateStr = useMemo(
-    () =>
+  // Date is computed in a useEffect so the initial server render and the
+  // initial client hydration render both produce an empty string — using
+  // `new Date()` directly during render captures server time on SSR and
+  // client time on hydration, which can disagree across timezones / cache
+  // staleness and trip a hydration mismatch.
+  const [dateStr, setDateStr] = useState("");
+  useEffect(() => {
+    setDateStr(
       new Date().toLocaleDateString("en-US", {
         year: "numeric",
         month: "2-digit",
         day: "2-digit",
       }),
-    []
-  );
+    );
+  }, []);
 
   const project = (prompt?.trim() || "untitled site").slice(0, 60);
   const sheet = useMemo(() => makeSheetNumber(prompt ?? ""), [prompt]);
@@ -39,7 +47,7 @@ export default function TitleBlock() {
   return (
     <div
       aria-hidden
-      className="pointer-events-none absolute bottom-6 left-[420px] z-20 select-none"
+      className="pointer-events-none absolute bottom-6 right-6 z-20 select-none"
     >
       <div className="bg-ink/55 backdrop-blur-md border border-paper/15 rounded-md px-3 py-2 shadow-[0_4px_18px_-4px_rgba(0,0,0,0.4)] min-w-[260px]">
         <div className="font-mono text-[8px] uppercase tracking-[0.25em] text-paper/45 mb-1.5">

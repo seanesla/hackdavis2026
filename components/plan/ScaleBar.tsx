@@ -29,7 +29,7 @@ export default function ScaleBar() {
   const { feet, barPx } = chooseScaleFt(distance, fov, canvasHeight);
 
   return (
-    <div className="pointer-events-none absolute bottom-6 right-6 z-20 flex flex-col items-end gap-1 select-none">
+    <div className="pointer-events-none absolute bottom-36 right-6 z-20 flex flex-col items-end gap-1 select-none">
       <div className="flex items-baseline gap-1 font-mono text-[10px] uppercase tracking-[0.2em] text-paper/80">
         <span>0</span>
         <span className="opacity-30">·</span>
