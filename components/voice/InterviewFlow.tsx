@@ -50,10 +50,12 @@ const INTERVIEW_Q: Question[] = [
     label: "floor area",
     text: "What is the total floor area you are planning?",
     retry:
-      "Sorry, I didn't catch a number. About how many square feet — something like 2400, or 5000?",
+      "Sorry, I didn't catch a number. About how many square feet — something like 2400, or 15000?",
     parse: (raw) => {
-      const cleaned = raw.toLowerCase();
-      const match = cleaned.match(/(\d{1,6})/);
+      // Strip commas first — Chrome transcribes "fifteen thousand" as "15,000"
+      // and the digit regex would otherwise stop at the comma.
+      const cleaned = raw.toLowerCase().replace(/,/g, "");
+      const match = cleaned.match(/(\d{1,7})/);
       if (!match) return null;
       let n = parseInt(match[1], 10);
       if (/thousand|k\b/.test(cleaned) && n < 1000) n *= 1000;
@@ -191,15 +193,19 @@ export default function InterviewFlow() {
     if (interviewIndex >= INTERVIEW_Q.length) {
       if (finalizedRef.current) return;
       finalizedRef.current = true;
+
+      // Kick off plan generation immediately and fade the overlay right away.
+      // The closing audio plays in the background while the scene reveals.
+      // We don't gate UI on speech callbacks — they can fail to fire under
+      // certain browser conditions and that would hang the demo.
+      runFromInterview(interviewAnswers);
+
       const closing = "Got it. Building your plan now.";
       pushTranscript({ who: "ai", text: closing });
-      speak(closing, {
-        onEnd: () => {
-          if (cancelled) return;
-          runFromInterview(interviewAnswers);
-          setPhase("done");
-        },
-      });
+      speak(closing);
+
+      setPhase("done");
+
       return () => {
         cancelled = true;
         stopSpeaking();

@@ -1,6 +1,12 @@
 "use client";
 import { create } from "zustand";
-import type { SitePlan, Step } from "./types";
+import type {
+  Building,
+  BuildingMaterial,
+  SitePlan,
+  Step,
+  StructureType,
+} from "./types";
 
 type Stage = { step: Step; plan: SitePlan | null };
 
@@ -61,6 +67,52 @@ type State = {
 };
 
 const STEP_INTERVAL_MS = 800;
+
+// Local fallback used by interview mode when the real /api/plan route fails
+// (e.g. no GEMINI_API_KEY). Builds a single building from the user's answers
+// so the demo always renders something.
+function buildFallbackPlan(a: InterviewAnswers): { plan: SitePlan; steps: Step[] } {
+  const stories = a.stories ?? 2;
+  const totalSqft = a.floorAreaSqft ?? 2400;
+  const perFloor = Math.max(400, totalSqft / Math.max(1, stories));
+  const side = Math.max(20, Math.round(Math.sqrt(perFloor)));
+  const w = side;
+  const d = side;
+
+  const lot = { width: 147, depth: 147 };
+  const setbacks = { front: 25, back: 20, side: 10 };
+  const x = Math.round((lot.width - w) / 2);
+  const z = Math.round((lot.depth - d) / 2);
+
+  const m = a.material;
+  const material: BuildingMaterial | undefined =
+    m && m !== "other" ? m : undefined;
+
+  let structure_type: StructureType | undefined;
+  if (a.useType === "residential") structure_type = stories >= 3 ? "apartment" : "house";
+  else if (a.useType === "commercial") structure_type = "office";
+
+  const building: Building = { x, z, w, d, stories, material, structure_type };
+  const plan: SitePlan = { lot, setbacks, buildings: [building] };
+
+  const steps: Step[] = [
+    { tool: "set_lot", note: `${lot.width} by ${lot.depth} feet`, ok: true },
+    {
+      tool: "place_building",
+      note: `${w} by ${d}, ${stories} stor${stories === 1 ? "y" : "ies"}${
+        material ? `, ${material}` : ""
+      }`,
+      ok: true,
+    },
+    {
+      tool: "finalize",
+      note: "(local fallback — add GEMINI_API_KEY for the real AI)",
+      ok: true,
+    },
+  ];
+
+  return { plan, steps };
+}
 
 function synthesizePrompt(a: InterviewAnswers): string {
   const parts: string[] = [];
@@ -191,10 +243,21 @@ export const useStore = create<State>((set, get) => {
     runFromPrompt,
 
     runFromInterview: async (answers) => {
-      // Voice answers feed into a natural-language prompt; the real Gemini
-      // agent over /api/plan does the actual planning and tool calls.
+      // First try the real Gemini agent via /api/plan.
       const prompt = synthesizePrompt(answers);
-      return runFromPrompt(prompt);
+      await runFromPrompt(prompt);
+      // If the real API failed (no key, rate limit, etc.) build a local plan
+      // from the answers so the demo still renders something.
+      if (get().error) {
+        const { plan, steps } = buildFallbackPlan(answers);
+        set({
+          plan,
+          steps,
+          running: false,
+          loading: false,
+          error: null,
+        });
+      }
     },
 
     setVoiceMode: (m) => set({ voiceMode: m }),
