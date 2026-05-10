@@ -64,12 +64,13 @@ function makeGlowMaterial(thickness: number, alpha: number, hex: string) {
 
 type HammerProps = {
   isLoading: boolean;
+  forging: boolean;
   interactive: boolean;
   subtle: boolean;
   lightRef: RefObject<THREE.PointLight | null>;
 };
 
-function Hammer({ isLoading, interactive, subtle, lightRef }: HammerProps) {
+function Hammer({ isLoading, forging, interactive, subtle, lightRef }: HammerProps) {
   const lift = useRef<THREE.Group>(null);
   const strike = useRef<THREE.Group>(null);
   const spinner = useRef<THREE.Group>(null);
@@ -178,7 +179,19 @@ function Hammer({ isLoading, interactive, subtle, lightRef }: HammerProps) {
 
     if (strike.current) {
       let targetX = 0;
-      if (submitting && submitElapsed >= 0 && !reduced.current) {
+
+      if (forging && !reduced.current) {
+        // Continuous hammering at ~1.6 strikes/sec. Sharp down-stroke,
+        // softer recovery — reads as forging, not a sine wave.
+        const cycle = (t * 1.6) % 1;
+        const struck = 0.95;
+        const raised = 0.15;
+        if (cycle < 0.35) {
+          targetX = lerp(raised, struck, easeOutCubic(cycle / 0.35));
+        } else {
+          targetX = lerp(struck, raised, easeOutCubic((cycle - 0.35) / 0.65));
+        }
+      } else if (submitting && submitElapsed >= 0 && !reduced.current) {
         if (submitElapsed < 0.25) {
           targetX = lerp(0, 1.0, easeOutCubic(submitElapsed / 0.25));
         } else if (submitElapsed < 0.35) {
@@ -187,24 +200,26 @@ function Hammer({ isLoading, interactive, subtle, lightRef }: HammerProps) {
           targetX = 0.6;
         }
       }
-      strike.current.rotation.x = lerp(strike.current.rotation.x, targetX, 0.18);
+
+      const k = forging ? 0.32 : 0.18;
+      strike.current.rotation.x = lerp(strike.current.rotation.x, targetX, k);
     }
 
     const peakSpin = subtle ? 0.04 : 0.06;
     let targetSpin = baseSpin;
-    if (submitting && submitElapsed >= 0.35 && !reduced.current) {
+    if (submitting && submitElapsed >= 0.35 && !reduced.current && !forging) {
       const ramp = clamp01((submitElapsed - 0.35) / 0.4);
       targetSpin = lerp(baseSpin, peakSpin, easeOutCubic(ramp));
     }
     spinVel.current = lerp(spinVel.current, targetSpin, 0.1);
-    if (spinner.current && !reduced.current) {
+    if (spinner.current && !reduced.current && !forging) {
       spinner.current.rotation.y += spinVel.current * dt60;
     }
 
     if (drift.current) {
       const bobAmp = subtle ? 0.02 : 0.06;
       const tiltAmp = subtle ? 0.015 : 0.04;
-      const bobActive = !reduced.current && !submitting;
+      const bobActive = !reduced.current && !submitting && !forging;
       const targetBob = bobActive ? Math.sin(t * 1.2) * bobAmp : 0;
       const targetTilt = bobActive ? Math.sin(t * 0.7 + 0.5) * tiltAmp : 0;
       drift.current.position.y = lerp(drift.current.position.y, targetBob, 0.15);
@@ -219,7 +234,8 @@ function Hammer({ isLoading, interactive, subtle, lightRef }: HammerProps) {
       const idle = subtle ? 0.6 : 0.9;
       const hover = subtle ? 1.2 : 1.4;
       const loading = subtle ? 1.8 : 2.4;
-      const target = submitting ? loading : hovered.current ? hover : idle;
+      const target =
+        submitting || forging ? loading : hovered.current ? hover : idle;
       lightRef.current.intensity = lerp(
         lightRef.current.intensity,
         target,
@@ -273,6 +289,7 @@ useGLTF.preload("/models/hammer.glb");
 
 type Props = {
   isLoading?: boolean;
+  forging?: boolean;
   interactive?: boolean;
   subtle?: boolean;
   className?: string;
@@ -280,6 +297,7 @@ type Props = {
 
 export default function Hammer3D({
   isLoading = false,
+  forging = false,
   interactive = false,
   subtle = false,
   className,
@@ -306,6 +324,7 @@ export default function Hammer3D({
         <Suspense fallback={null}>
           <Hammer
             isLoading={isLoading}
+            forging={forging}
             interactive={interactive}
             subtle={subtle}
             lightRef={lightRef}

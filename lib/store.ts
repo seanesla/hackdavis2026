@@ -13,6 +13,8 @@ import {
   type Room,
   interiorCacheKey,
 } from "./furniture";
+import { getPlans, savePlan } from "./pastPlansDb";
+import { getUserId, getThreadId, setThreadId } from "./userIdentity";
 
 type Stage = { step: Step; plan: SitePlan | null };
 
@@ -202,10 +204,18 @@ export const useStore = create<State>((set, get) => {
     };
 
     try {
+      const history = (await getPlans()).map((s) => ({
+        prompt: s.prompt,
+        sitePlan: s.sitePlan,
+      }));
       const res = await fetch("/api/plan", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ prompt: p }),
+        body: JSON.stringify({
+          prompt: p,
+          history,
+          threadId: getThreadId(),
+        }),
       });
       data = await res.json();
     } catch (err) {
@@ -242,6 +252,31 @@ export const useStore = create<State>((set, get) => {
         error: "Agent returned no steps.",
       });
       return;
+    }
+
+    const finalPlan = stages[stages.length - 1]?.plan ?? data.plan ?? null;
+    if (finalPlan) {
+      void savePlan(p, finalPlan);
+      // Background save to Backboard memory; updates threadId on first call.
+      void fetch("/api/save-memory", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          userId: getUserId(),
+          threadId: getThreadId(),
+          prompt: p,
+          sitePlan: finalPlan,
+        }),
+      })
+        .then((r) => r.json())
+        .then((d) => {
+          if (d?.threadId && typeof d.threadId === "string") {
+            setThreadId(d.threadId);
+          }
+        })
+        .catch(() => {
+          // best-effort — UI continues working without memory
+        });
     }
 
     // Replay stages with intervals so per-step drop animations land cleanly.

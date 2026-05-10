@@ -1,23 +1,15 @@
-import { promises as fs } from "fs";
-import path from "path";
 import { BackboardClient } from "backboard-sdk";
 import type { SitePlan } from "./types";
 
-export const USER_ID = "hackathon-user-1";
-
-export type StoredSession = {
-  id: string;
-  userId: string;
-  prompt: string;
-  sitePlan: SitePlan;
-  createdAt: string;
-};
-
-const PLACEHOLDER_KEY = "your_key_here";
+const PLACEHOLDER_KEYS = new Set([
+  "your_key_here",
+  "your_backboard_key_here",
+  "",
+]);
 
 function hasRealKey(): boolean {
   const key = process.env.BACKBOARD_API_KEY;
-  return Boolean(key) && key !== PLACEHOLDER_KEY;
+  return !!key && !PLACEHOLDER_KEYS.has(key);
 }
 
 let _client: BackboardClient | null = null;
@@ -29,58 +21,15 @@ function getClient(): BackboardClient | null {
   return _client;
 }
 
-const mockStore: StoredSession[] = [];
-const threadIdByUser = new Map<string, string>();
-
-// On Vercel the function filesystem outside /tmp is read-only, and /tmp is
-// ephemeral per-instance — so disk persistence buys nothing and would crash.
-// Skip it there; rely on the in-memory map (good enough for one warm instance).
-const IS_SERVERLESS = Boolean(process.env.VERCEL);
-const THREADS_FILE = path.join(process.cwd(), ".backboard-threads.json");
-
-async function hydrateThreadFromDisk(userId: string): Promise<void> {
-  if (IS_SERVERLESS) return;
-  if (threadIdByUser.has(userId)) return;
-  try {
-    const raw = await fs.readFile(THREADS_FILE, "utf-8");
-    const parsed = JSON.parse(raw);
-    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-      const threadId = (parsed as Record<string, unknown>)[userId];
-      if (typeof threadId === "string" && threadId) {
-        threadIdByUser.set(userId, threadId);
-      }
-    }
-  } catch {
-    // missing or unreadable file is expected on first run; ignore
-  }
-}
-
-async function persistThreadId(userId: string, threadId: string): Promise<void> {
-  if (IS_SERVERLESS) return;
-  try {
-    let obj: Record<string, string> = {};
-    try {
-      const raw = await fs.readFile(THREADS_FILE, "utf-8");
-      const parsed = JSON.parse(raw);
-      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-        obj = parsed as Record<string, string>;
-      }
-    } catch {
-      // file may not exist yet; start fresh
-    }
-    obj[userId] = threadId;
-    await fs.writeFile(THREADS_FILE, JSON.stringify(obj, null, 2), "utf-8");
-  } catch (err) {
-    console.error("[backboard] persistThreadId failed", err);
-  }
-}
-
 function summarize(plan: SitePlan): string {
   const acres = ((plan.lot.width * plan.lot.depth) / 43560).toFixed(2);
   const parts = [`${acres} acre lot`];
   const buildings = plan.buildings ?? [];
   if (buildings.length === 1) {
-    parts.push(`${buildings[0].stories}-story building`);
+    const b = buildings[0];
+    parts.push(
+      `${b.stories}-story${b.material ? ` ${b.material}` : ""} building`,
+    );
   } else if (buildings.length > 1) {
     parts.push(`${buildings.length} buildings`);
   }
@@ -88,108 +37,80 @@ function summarize(plan: SitePlan): string {
   return parts.join(", ");
 }
 
-function extractJsonArray(text: string): unknown[] {
-  const trimmed = text.trim();
-  try {
-    const parsed = JSON.parse(trimmed);
-    if (Array.isArray(parsed)) return parsed;
-  } catch {
-    // fall through to fenced/embedded extraction
-  }
-  const fence = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
-  if (fence) {
-    try {
-      const parsed = JSON.parse(fence[1].trim());
-      if (Array.isArray(parsed)) return parsed;
-    } catch {
-      // ignore
-    }
-  }
-  const start = trimmed.indexOf("[");
-  const end = trimmed.lastIndexOf("]");
-  if (start !== -1 && end > start) {
-    try {
-      const parsed = JSON.parse(trimmed.slice(start, end + 1));
-      if (Array.isArray(parsed)) return parsed;
-    } catch {
-      // ignore
-    }
-  }
-  return [];
-}
+export type SaveResult = {
+  threadId: string | null;
+  ok: boolean;
+};
+
+export type SaveKind = "new" | "note-update";
 
 export async function saveSession(
   userId: string,
+  threadId: string | null,
+  prompt: string,
   sitePlan: SitePlan,
-  prompt: string
-): Promise<StoredSession> {
-  const session: StoredSession = {
-    id: `session_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-    userId,
-    prompt,
-    sitePlan,
-    createdAt: new Date().toISOString(),
-  };
-
+  notes?: string,
+  kind: SaveKind = "new",
+): Promise<SaveResult> {
   const client = getClient();
-  if (!client) {
-    console.log("[backboard:mock] saveSession", { userId, prompt });
-    mockStore.unshift(session);
-    return session;
-  }
+  if (!client) return { threadId, ok: false };
 
   try {
-    await hydrateThreadFromDisk(userId);
-    const existingThreadId = threadIdByUser.get(userId);
-    const content = [
-      `Save this site planning session for user ${userId}.`,
-      `User prompt: ${prompt}`,
-      `Resulting SitePlan JSON:`,
-      JSON.stringify(sitePlan),
-      `Summary: ${summarize(sitePlan)}.`,
-      `Acknowledge briefly. Future requests on this thread may ask you to recall past sessions as a JSON array of {prompt, sitePlan} objects.`,
-    ].join("\n");
+    const content =
+      kind === "note-update"
+        ? [
+            `The user added a note to an existing plan (NOT a new plan):`,
+            `Original prompt was: "${prompt}"`,
+            `Note: ${notes ?? ""}`,
+            `Plan summary unchanged: ${summarize(sitePlan)}.`,
+            `Acknowledge briefly. When asked about plan counts later, treat this as the SAME plan, not a new one.`,
+          ].join("\n")
+        : [
+            `Save this site planning session for user ${userId}.`,
+            `User prompt: ${prompt}`,
+            notes ? `User notes about this plan: ${notes}` : "",
+            `Resulting SitePlan JSON:`,
+            JSON.stringify(sitePlan),
+            `Summary: ${summarize(sitePlan)}.`,
+            `Acknowledge briefly. Future requests on this thread may ask you to recall past sessions, describe patterns in this user's preferences, or answer chat questions about their history.`,
+          ]
+            .filter(Boolean)
+            .join("\n");
 
     const response = await client.sendMessage({
       content,
       memory: "Auto",
-      ...(existingThreadId ? { threadId: existingThreadId } : {}),
+      ...(threadId ? { threadId } : {}),
     });
 
+    let newThreadId = threadId;
     if (
       response &&
       typeof response === "object" &&
       "threadId" in response &&
-      response.threadId &&
-      typeof response.threadId === "string"
+      typeof response.threadId === "string" &&
+      response.threadId
     ) {
-      threadIdByUser.set(userId, response.threadId);
-      await persistThreadId(userId, response.threadId);
+      newThreadId = response.threadId;
     }
+    return { threadId: newThreadId, ok: true };
   } catch (err) {
     console.error("[backboard] saveSession failed", err);
+    return { threadId, ok: false };
   }
-
-  return session;
 }
 
-export async function getSessionHistory(
-  userId: string
-): Promise<StoredSession[]> {
+export async function getPreferences(
+  threadId: string | null,
+): Promise<string> {
+  if (!threadId) return "";
   const client = getClient();
-  if (!client) {
-    console.log("[backboard:mock] getSessionHistory", { userId });
-    return mockStore.filter((s) => s.userId === userId).slice(0, 5);
-  }
-
-  await hydrateThreadFromDisk(userId);
-  const threadId = threadIdByUser.get(userId);
-  if (!threadId) return [];
+  if (!client) return "";
 
   try {
     const response = await client.sendMessage({
       content:
-        "List the last 5 site planning sessions you have stored for this user, most recent first. Respond ONLY with a raw JSON array of objects shaped {\"prompt\": string, \"sitePlan\": object}. No prose, no markdown, no commentary. If you have no sessions, return [].",
+        "Based on the past site plans you've stored for this user, what design preferences do you observe? Look for patterns in: building material (wood/brick/stucco/etc), number of stories, building footprint size, presence of parking, lot size, structure type. Respond with 1-3 short bullet points like '- prefers wood construction'. If you have fewer than 2 past plans, respond with exactly 'NONE'. Do NOT preface with explanation.",
       threadId,
     });
 
@@ -197,43 +118,40 @@ export async function getSessionHistory(
       response && typeof response === "object" && "content" in response
         ? (response.content as string | null)
         : null;
-    if (!content) return [];
-
-    const arr = extractJsonArray(content);
-    const sessions: StoredSession[] = [];
-    for (const item of arr) {
-      if (!item || typeof item !== "object") continue;
-      const obj = item as { prompt?: unknown; sitePlan?: unknown };
-      if (typeof obj.prompt !== "string") continue;
-      if (!obj.sitePlan || typeof obj.sitePlan !== "object") continue;
-      sessions.push({
-        id: `bb_${sessions.length}_${Date.now()}`,
-        userId,
-        prompt: obj.prompt,
-        sitePlan: obj.sitePlan as SitePlan,
-        createdAt: new Date().toISOString(),
-      });
-      if (sessions.length >= 5) break;
-    }
-    return sessions;
+    if (typeof content !== "string") return "";
+    const trimmed = content.trim();
+    if (!trimmed || trimmed.toUpperCase() === "NONE") return "";
+    return trimmed;
   } catch (err) {
-    console.error("[backboard] getSessionHistory failed", err);
-    return [];
+    console.error("[backboard] getPreferences failed", err);
+    return "";
   }
 }
 
-export async function buildMemoryContext(userId: string): Promise<string> {
-  const history = await getSessionHistory(userId);
-  if (history.length === 0) return "";
+export async function chatWithHistory(
+  threadId: string | null,
+  question: string,
+): Promise<string> {
+  if (!threadId) {
+    return "No past plans saved yet — generate a plan first to start your memory.";
+  }
+  const client = getClient();
+  if (!client) return "Memory service is not configured.";
 
-  const lines = history.map(
-    (s, i) =>
-      `  ${i + 1}. "${s.prompt}" → ${summarize(s.sitePlan)}`
-  );
-
-  return [
-    `User previously planned:`,
-    ...lines,
-    `Use this history to infer reasonable defaults when the current prompt is vague.`,
-  ].join("\n");
+  try {
+    const response = await client.sendMessage({
+      content: `User question about their past site plans: "${question}"\n\nAnswer based ONLY on the plans you've stored for this user. Be concise — 2-3 sentences max. If you don't have enough information to answer, say so plainly.`,
+      threadId,
+    });
+    const content =
+      response && typeof response === "object" && "content" in response
+        ? (response.content as string | null)
+        : null;
+    return typeof content === "string" && content.trim()
+      ? content.trim()
+      : "No response.";
+  } catch (err) {
+    console.error("[backboard] chatWithHistory failed", err);
+    return "Memory service errored. Try again in a moment.";
+  }
 }
