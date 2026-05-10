@@ -17,10 +17,22 @@ const MAX_EXCHANGES = 30;
 const LISTEN_TIMEOUT_MS = 10000;
 const POLL_MS = 150;
 
-export default function FreestyleFlow() {
+type Props = {
+  // "create" (default) is the original landing-page flow that builds the
+  // first plan from the conversation. "modify" is the in-panel variant that
+  // keeps the current plan and merges the conversation into the existing
+  // brief on finalize.
+  mode?: "create" | "modify";
+  // When provided, the "end" button calls this instead of history.back().
+  // Required for the "modify" overlay so closing it doesn't navigate away.
+  onClose?: () => void;
+};
+
+export default function FreestyleFlow({ mode = "create", onClose }: Props) {
   const transcript = useStore((s) => s.transcript);
   const pushTranscript = useStore((s) => s.pushTranscript);
   const resetVoice = useStore((s) => s.resetVoice);
+  const resetTranscript = useStore((s) => s.resetTranscript);
   const runFromPrompt = useStore((s) => s.runFromPrompt);
   const muted = useStore((s) => s.muted);
 
@@ -32,13 +44,23 @@ export default function FreestyleFlow() {
   const finalizedRef = useRef(false);
 
   useEffect(() => {
-    resetVoice();
-    return () => {
+    // Modify mode must NOT call resetVoice — that wipes plan/steps. Use the
+    // lighter resetTranscript so the user keeps the build they're modifying.
+    if (mode === "modify") {
+      resetTranscript();
+    } else {
       resetVoice();
+    }
+    return () => {
+      if (mode === "modify") {
+        resetTranscript();
+      } else {
+        resetVoice();
+      }
       stopSpeaking();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [mode]);
 
   useEffect(() => {
     const id = setInterval(() => setAiSpeaking(isSpeaking()), 200);
@@ -150,6 +172,24 @@ export default function FreestyleFlow() {
         .transcript.filter((e) => e.who === "user")
         .map((e) => e.text)
         .join(" ");
+      if (mode === "modify") {
+        const currentPrompt = useStore.getState().prompt.trim();
+        const tweaks = joined.trim();
+        // If the user opened modify-voice but didn't actually say anything,
+        // bail out without rebuilding so we don't drop their plan.
+        if (!tweaks) {
+          setPhase("done");
+          onClose?.();
+          return;
+        }
+        const merged = currentPrompt
+          ? `${currentPrompt.replace(/[.!?]\s*$/, "")}. Also: ${tweaks}.`
+          : tweaks;
+        runFromPrompt(merged);
+        setPhase("done");
+        onClose?.();
+        return;
+      }
       runFromPrompt(joined || "freestyle conversation");
       setPhase("done");
     };
@@ -158,7 +198,9 @@ export default function FreestyleFlow() {
       await preloadVoices();
       if (cancelled) return;
       const greeting =
-        "Hi! Tell me about the building you want to design — height, use, anything goes. Say 'build it' when you're ready.";
+        mode === "modify"
+          ? "What would you like to change about the current plan? Say 'build it' when you're ready."
+          : "Hi! Tell me about the building you want to design — height, use, anything goes. Say 'build it' when you're ready.";
       pushTranscript({ who: "ai", text: greeting });
       setPhase("speaking");
       await sayAndWait(greeting);
@@ -177,7 +219,10 @@ export default function FreestyleFlow() {
         pushTranscript({ who: "user", text: userText });
 
         if (FINALIZE_RE.test(userText)) {
-          const closing = "Got it. Building your plan now.";
+          const closing =
+            mode === "modify"
+              ? "Got it. Updating the plan now."
+              : "Got it. Building your plan now.";
           pushTranscript({ who: "ai", text: closing });
           setPhase("speaking");
           await sayAndWait(closing);
@@ -237,7 +282,7 @@ export default function FreestyleFlow() {
     >
       <div className="w-full max-w-3xl flex items-start justify-between pointer-events-auto">
         <span className="font-mono text-[10px] uppercase tracking-[0.25em] text-mute">
-          freestyle · {phaseLabel[phase]}
+          {mode === "modify" ? "modify" : "freestyle"} · {phaseLabel[phase]}
         </span>
       </div>
 
@@ -301,7 +346,11 @@ export default function FreestyleFlow() {
             onClick={() => {
               stopSpeaking();
               recognizer.stop();
-              history.back();
+              if (mode === "modify") {
+                onClose?.();
+              } else {
+                history.back();
+              }
             }}
             className="font-mono text-xs font-semibold uppercase tracking-[0.2em] text-paper hover:text-accent transition-colors px-4 py-2 rounded-md border border-rule hover:border-accent bg-ink/60 backdrop-blur-md"
           >

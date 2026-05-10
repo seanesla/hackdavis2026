@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useFrame, useThree } from "@react-three/fiber";
 import { Edges, Html, Line, RoundedBox } from "@react-three/drei";
 import * as THREE from "three";
@@ -63,8 +63,6 @@ import {
 // at the selected level, small enough that the lift reads as the same
 // building (not a separate object).
 const STORY_LIFT_FT = 14;
-
-const SCAFFOLD_BOX = { w: 30, d: 30, h: 24 };
 
 const Y = {
   lotBottom: 0,
@@ -199,19 +197,11 @@ export default function SitePlanMesh({ siteplan }: Props) {
   const plan = siteplan !== undefined ? siteplan : storePlan;
   const debug = useDebugOverlay();
 
+  // While drafting (plan not yet returned) we used to render an accent-
+  // colored placeholder box here. The floating hammer + "drafting…" overlay
+  // already convey the loading state, so the empty scene reads cleaner.
   if (!plan || plan.lot.width <= 0 || plan.lot.depth <= 0) {
-    return (
-      <RoundedBox
-        position={[0, SCAFFOLD_BOX.h / 2, 0]}
-        args={[SCAFFOLD_BOX.w, SCAFFOLD_BOX.h, SCAFFOLD_BOX.d]}
-        radius={0.6}
-        smoothness={3}
-        castShadow
-        receiveShadow
-      >
-        <meshStandardMaterial color={accent} roughness={0.45} metalness={0.05} />
-      </RoundedBox>
-    );
+    return null;
   }
 
   const { lot, setbacks, buildings, parking, trees, walkways, fences, props, bushes } =
@@ -1156,25 +1146,65 @@ function SetbackEnvelope({
   );
 }
 
-// Smooth grow-up animation. No bouncing, no z-clipping — anchored at the base
-// and scales Y from 0 → 1 with an ease-out cubic. Buildings rise out of the lot.
-function useGrowUp<T extends THREE.Object3D>(durationS = 0.7, delay = 0) {
+// Drop curve: quadratic-accelerating fall (gravity feel) followed by two
+// dampened squash-bounces. Bounces are intentionally subtle — a full ease-out-
+// bounce sends a 30ft building 22ft back up, which reads as "floating".
+function easeOutDrop(t: number): number {
+  if (t < 0.6) {
+    const u = t / 0.6;
+    return u * u;
+  }
+  if (t < 0.85) {
+    const u = (t - 0.6) / 0.25;
+    return 1 - Math.sin(u * Math.PI) * 0.12;
+  }
+  const u = (t - 0.85) / 0.15;
+  return 1 - Math.sin(u * Math.PI) * 0.04;
+}
+
+// Drop-and-bounce reveal. Buildings fall from above the lot and bounce to
+// rest. The caller passes the explicit rest Y so we never read it back from
+// the live position (which would capture the dropped value on Strict Mode's
+// double-effect or any prop-driven re-render, leaving the building floating).
+// Anchored at the base means no z-fighting with the lot during landing.
+const DROP_HEIGHT_FT = 90;
+function useGrowUp<T extends THREE.Object3D>(
+  durationS = 1.0,
+  delay = 0,
+  restY = Y.lotTop
+) {
   const ref = useRef<T>(null);
   const t = useRef(0);
   const elapsed = useRef(0);
 
+  // Lift the group up before first paint so we don't flash one frame at
+  // ground level. Hidden until delay elapses so staggered siblings don't
+  // hover visibly.
+  useLayoutEffect(() => {
+    const m = ref.current;
+    if (!m) return;
+    m.position.y = restY + DROP_HEIGHT_FT;
+    if (delay > 0) m.visible = false;
+  }, [delay, restY]);
+
   useFrame((_, dt) => {
     const m = ref.current;
     if (!m) return;
+
     elapsed.current += dt;
     if (elapsed.current < delay) {
-      m.scale.y = 0.0001;
+      m.visible = false;
+      m.position.y = restY + DROP_HEIGHT_FT;
       return;
     }
-    if (t.current >= 1) return;
+    if (!m.visible) m.visible = true;
+    if (t.current >= 1) {
+      m.position.y = restY;
+      return;
+    }
     t.current = Math.min(1, t.current + dt / durationS);
-    const e = 1 - Math.pow(1 - t.current, 3);
-    m.scale.y = Math.max(0.0001, e);
+    const e = easeOutDrop(t.current);
+    m.position.y = restY + (1 - e) * DROP_HEIGHT_FT;
   });
 
   return ref;
@@ -2030,7 +2060,7 @@ function ParkingGarageBuilding({
   const height = building.stories * STORY_HEIGHT_FT;
   const cx = building.x + building.w / 2;
   const cz = building.z + building.d / 2;
-  const ref = useGrowUp<THREE.Group>(0.75, delay);
+  const ref = useGrowUp<THREE.Group>(1.0, delay);
 
   const concrete = MATERIAL_PRESETS.concrete;
   const slabT = 1.2;
@@ -2150,7 +2180,7 @@ function GreenhouseBuilding({
   const height = building.stories * STORY_HEIGHT_FT;
   const cx = building.x + building.w / 2;
   const cz = building.z + building.d / 2;
-  const ref = useGrowUp<THREE.Group>(0.75, delay);
+  const ref = useGrowUp<THREE.Group>(1.0, delay);
 
   const frameColor = valid ? "#1f2a24" : COLORS.buildingInvalid;
   const glassColor = "#bcd5d8";
@@ -2271,7 +2301,7 @@ function PavilionBuilding({
   const height = STORY_HEIGHT_FT;
   const cx = building.x + building.w / 2;
   const cz = building.z + building.d / 2;
-  const ref = useGrowUp<THREE.Group>(0.75, delay);
+  const ref = useGrowUp<THREE.Group>(1.0, delay);
 
   const woodTrim = "#7a543a";
   const beam = "#3d2316";
@@ -2910,7 +2940,7 @@ function DefaultBuilding({
   const cz = building.z + building.d / 2;
 
   // Anchor at the base so growth scales upward from the lot, not the center.
-  const ref = useGrowUp<THREE.Group>(0.75, delay);
+  const ref = useGrowUp<THREE.Group>(1.0, delay);
   const preset = presetFor(building.material);
 
   // ── Floor reveal: when a story of THIS building is selected, the body is

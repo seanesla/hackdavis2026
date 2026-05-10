@@ -16,10 +16,10 @@ const SIDEBAR_SCALE = 1;
 
 // Used while the sidebar compartment hasn't mounted yet (e.g. on the landing
 // page, or the first frame after navigating to /plan). Matches the
-// `h-[400px]` div in `components/plan/SideRail.tsx` so the canvas size is
+// `h-[260px]` div in `components/plan/SideRail.tsx` so the canvas size is
 // stable across slots.
 const FALLBACK_W = 400;
-const FALLBACK_H = 400;
+const FALLBACK_H = 260;
 
 type Slot = "center" | "sidebar" | "hidden";
 
@@ -58,7 +58,16 @@ export default function FloatingHammer() {
   // frame without firing any layout/resize events — so we poll on rAF for
   // the first second to follow it, then stop. ResizeObserver wouldn't help
   // here because transforms don't change the layout box.
+  // When we leave /plan, reset slotRect to the fallback so the centered
+  // hammer always returns to the exact same spot regardless of what the
+  // sidebar last measured. Otherwise centerX = (vw - slotRect.w * scale)/2
+  // would drift between visits as the sidebar's measured width changes.
   useEffect(() => {
+    if (!pathname?.startsWith("/plan")) {
+      setSlotRect({ x: 0, y: 0, w: FALLBACK_W, h: FALLBACK_H });
+      return;
+    }
+
     const measure = () => {
       const el = document.getElementById("hammer-slot");
       if (!el) return;
@@ -121,9 +130,17 @@ export default function FloatingHammer() {
 
   if (vw === 0) return null;
 
+  // r3f's <canvas> defaults to pointer-events: auto, which would block
+  // clicks underneath the floating hammer (the parent's pointer-events:
+  // none doesn't propagate, since pointer-events isn't inherited). Force
+  // it off unless the hammer is in interactive sidebar mode.
+  const canvasInteractive = slot === "sidebar";
+
   return (
     <motion.div
-      className="fixed pointer-events-none z-[90]"
+      className={`fixed pointer-events-none z-[90] [&_canvas]:!w-full [&_canvas]:!h-full ${
+        canvasInteractive ? "" : "[&_*]:!pointer-events-none"
+      }`}
       style={{
         top: 0,
         left: 0,

@@ -1,4 +1,5 @@
 "use client";
+import { useEffect, useRef, useState } from "react";
 import { motion } from "framer-motion";
 import Link from "next/link";
 import { useStore } from "@/lib/store";
@@ -6,11 +7,50 @@ import Step from "./Step";
 import AccentPicker from "@/components/AccentPicker";
 import CompartmentFire from "./CompartmentFire";
 import { downloadPlan } from "@/lib/exportPlan";
+import { isSpeechSupported } from "@/lib/speech";
 
 export default function SideRail() {
   const { prompt, steps, running } = useStore();
   const plan = useStore((s) => s.plan);
+  const runFromPrompt = useStore((s) => s.runFromPrompt);
+  const voiceSupported = useStore((s) => s.voiceSupported);
+  const setVoiceSupported = useStore((s) => s.setVoiceSupported);
+  const setVoiceModifyOpen = useStore((s) => s.setVoiceModifyOpen);
   const canExport = !!plan && !running;
+  const canVoiceModify = !running && !!prompt.trim() && voiceSupported;
+
+  // Detect speech support if the user landed on /plan directly (e.g. via a
+  // shared URL) and never went through the landing page where this is set.
+  useEffect(() => {
+    if (!voiceSupported) {
+      setVoiceSupported(isSpeechSupported());
+    }
+  }, [voiceSupported, setVoiceSupported]);
+
+  const [draft, setDraft] = useState(prompt);
+  const taRef = useRef<HTMLTextAreaElement>(null);
+
+  // Keep local draft in sync when the canonical prompt changes (new run, import, etc.)
+  // — but don't clobber what the user is currently typing.
+  useEffect(() => {
+    if (document.activeElement !== taRef.current) {
+      setDraft(prompt);
+    }
+  }, [prompt]);
+
+  // Auto-grow the textarea so the brief stays fully visible while editing.
+  useEffect(() => {
+    const el = taRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${el.scrollHeight}px`;
+  }, [draft]);
+
+  const submitEdit = () => {
+    const next = draft.trim();
+    if (!next || next === prompt || running) return;
+    void runFromPrompt(next);
+  };
 
   return (
     <motion.aside
@@ -34,18 +74,76 @@ export default function SideRail() {
 
       <div
         id="hammer-slot"
-        className="relative h-[400px] border-b border-rule/60"
+        className="relative h-[260px] border-b border-rule/60"
       >
         <CompartmentFire />
       </div>
 
       <div className="px-6 py-4 border-b border-rule/60">
-        <div className="text-[10px] uppercase tracking-[0.2em] text-mute font-mono">
-          brief
+        <div className="flex items-center justify-between gap-2">
+          <div className="text-[10px] uppercase tracking-[0.2em] text-mute font-mono">
+            brief
+          </div>
+          <div className="flex items-center gap-3">
+            {draft.trim() !== prompt.trim() && draft.trim() && !running && (
+              <button
+                type="button"
+                onClick={submitEdit}
+                className="font-mono text-[10px] uppercase tracking-[0.2em] text-accent hover:opacity-80 transition-opacity"
+              >
+                rebuild ↵
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => canVoiceModify && setVoiceModifyOpen(true)}
+              disabled={!canVoiceModify}
+              title={
+                !voiceSupported
+                  ? "voice not supported in this browser"
+                  : !prompt.trim()
+                  ? "no plan to modify yet"
+                  : running
+                  ? "wait for the current build to finish"
+                  : "talk with ai to modify the plan"
+              }
+              aria-label="talk with ai to modify the plan"
+              className="flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.2em] text-accent hover:opacity-80 disabled:opacity-30 disabled:cursor-not-allowed transition-opacity cursor-pointer"
+            >
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                className="w-3 h-3"
+                aria-hidden="true"
+              >
+                <rect x="9" y="2" width="6" height="12" rx="3" />
+                <path d="M5 11v1a7 7 0 0 0 14 0v-1" />
+                <line x1="12" y1="19" x2="12" y2="23" />
+                <line x1="8" y1="23" x2="16" y2="23" />
+              </svg>
+              voice
+            </button>
+          </div>
         </div>
-        <p className="mt-2 font-mono text-[13px] text-paper/80 leading-relaxed">
-          {prompt || "—"}
-        </p>
+        <textarea
+          ref={taRef}
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && !e.shiftKey) {
+              e.preventDefault();
+              submitEdit();
+            }
+          }}
+          disabled={running}
+          rows={1}
+          placeholder="—"
+          className="mt-2 w-full bg-transparent outline-none resize-none font-mono text-[13px] text-paper/80 leading-relaxed placeholder:text-mute/60 disabled:opacity-50 disabled:cursor-not-allowed focus:text-paper transition-colors"
+        />
       </div>
 
       <div className="flex items-center gap-2 px-6 py-3 border-b border-rule/60">

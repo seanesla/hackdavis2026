@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import {
   ContactShadows,
@@ -12,13 +12,16 @@ import SitePlanMesh from "./SitePlanMesh";
 import { useStore } from "@/lib/store";
 import { useAccent } from "@/lib/accent";
 import type { SitePlan } from "@/lib/types";
+import { registerScene, unregisterScene } from "@/lib/sceneControls";
 
 type Props = { siteplan?: SitePlan | null };
 
 export default function Scene({ siteplan }: Props) {
-  const [interacted, setInteracted] = useState(false);
   const accent = useAccent((s) => s.accent.hex);
   const selectFloor = useStore((s) => s.selectFloor);
+  const autoRotate = useStore((s) => s.autoRotate);
+  const setAutoRotate = useStore((s) => s.setAutoRotate);
+  const gridVisible = useStore((s) => s.gridVisible);
 
   return (
     <Canvas
@@ -36,7 +39,11 @@ export default function Scene({ siteplan }: Props) {
         logarithmicDepthBuffer: true,
       }}
       camera={{ position: [120, 110, 140], fov: 38, near: 5, far: 1500 }}
-      onPointerDown={() => setInteracted(true)}
+      onPointerDown={() => {
+        // First user drag stops the intro auto-rotate. The toolbar can turn
+        // it back on later — that's why this lives in the store now.
+        if (autoRotate) setAutoRotate(false);
+      }}
       onPointerMissed={() => selectFloor(null)}
       onCreated={({ gl }) => {
         gl.toneMapping = THREE.ACESFilmicToneMapping;
@@ -94,19 +101,22 @@ export default function Scene({ siteplan }: Props) {
         frames={1}
       />
 
-      {/* Drafting grid — subtle, sits just below lot to avoid z-fight. */}
-      <Grid
-        args={[600, 600]}
-        position={[0, -0.02, 0]}
-        cellSize={10}
-        cellThickness={0.4}
-        cellColor="#23232a"
-        sectionSize={50}
-        sectionThickness={0.8}
-        sectionColor="#3a3a44"
-        fadeDistance={420}
-        fadeStrength={1.4}
-      />
+      {/* Drafting grid — subtle, sits just below lot to avoid z-fight.
+          Toggled off via SceneTools so screenshots can be lot-only. */}
+      {gridVisible && (
+        <Grid
+          args={[600, 600]}
+          position={[0, -0.02, 0]}
+          cellSize={10}
+          cellThickness={0.9}
+          cellColor="#4a4a55"
+          sectionSize={50}
+          sectionThickness={1.6}
+          sectionColor="#7a7a88"
+          fadeDistance={520}
+          fadeStrength={0.9}
+        />
+      )}
 
       <SitePlanMesh siteplan={siteplan} />
 
@@ -116,18 +126,48 @@ export default function Scene({ siteplan }: Props) {
         maxDistance={800}
         maxPolarAngle={Math.PI / 2.05}
         target={[0, 0, 0]}
-        autoRotate={!interacted}
+        autoRotate={autoRotate}
         autoRotateSpeed={0.35}
         enableDamping
         dampingFactor={0.08}
       />
       <CameraRig siteplan={siteplan} />
+      <SceneControlsBridge />
     </Canvas>
   );
 }
 
+// Lives inside the Canvas so it can read the camera + OrbitControls via
+// useThree, then publishes them to the lib/sceneControls singleton so the
+// floating toolbar (rendered outside the Canvas) can drive zoom and
+// screenshots programmatically. The renderer + scene are needed for the
+// render-on-demand screenshot path.
+function SceneControlsBridge() {
+  const camera = useThree((s) => s.camera) as THREE.PerspectiveCamera;
+  const gl = useThree((s) => s.gl);
+  const scene = useThree((s) => s.scene);
+  const controls = useThree((s) => s.controls) as
+    | {
+        target: THREE.Vector3;
+        minDistance: number;
+        maxDistance: number;
+        update: () => void;
+      }
+    | null;
+
+  useEffect(() => {
+    if (!controls) return;
+    registerScene(camera, controls, gl, scene);
+    return () => unregisterScene();
+  }, [camera, controls, gl, scene]);
+
+  return null;
+}
+
 function CameraRig({ siteplan }: { siteplan?: SitePlan | null }) {
   const storePlan = useStore((s) => s.plan);
+  const resetTick = useStore((s) => s.resetTick);
+  const viewMode = useStore((s) => s.viewMode);
   const plan = siteplan !== undefined ? siteplan : storePlan;
 
   const camera = useThree((s) => s.camera);
@@ -136,19 +176,24 @@ function CameraRig({ siteplan }: { siteplan?: SitePlan | null }) {
     | null;
 
   const targetPos = useMemo(() => {
-    if (!plan || plan.lot.width <= 0 || plan.lot.depth <= 0) {
-      return new THREE.Vector3(120, 110, 140);
-    }
-    const span = Math.max(plan.lot.width, plan.lot.depth, 40);
+    const fallbackSpan = 100;
+    const span = plan && plan.lot.width > 0 && plan.lot.depth > 0
+      ? Math.max(plan.lot.width, plan.lot.depth, 40)
+      : fallbackSpan;
     const d = span * 1.3;
+    if (viewMode === "top") {
+      // Pure overhead. Tiny z offset prevents gimbal weirdness when
+      // OrbitControls evaluates the up vector at polar angle ≈ 0.
+      return new THREE.Vector3(0, d * 1.4, 0.01);
+    }
     return new THREE.Vector3(d, d * 0.85, d);
-  }, [plan?.lot.width, plan?.lot.depth]);
+  }, [plan?.lot.width, plan?.lot.depth, viewMode]);
 
   const remaining = useRef(0);
 
   useEffect(() => {
     remaining.current = 1.2;
-  }, [targetPos]);
+  }, [targetPos, resetTick]);
 
   useFrame((_, dt) => {
     if (remaining.current <= 0) return;

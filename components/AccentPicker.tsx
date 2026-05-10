@@ -22,7 +22,7 @@ export default function AccentPicker({
             aria-checked={active}
             aria-label={a.name}
             onClick={() => setAccent(a)}
-            className={`relative w-3 h-3 rounded-full transition-transform duration-200 hover:scale-125 ${
+            className={`relative w-3 h-3 rounded-full transition-transform duration-200 hover:scale-125 cursor-pointer ${
               active ? "scale-110 ring-1 ring-offset-2 ring-offset-ink ring-paper/40" : ""
             }`}
             style={{ background: a.hex }}

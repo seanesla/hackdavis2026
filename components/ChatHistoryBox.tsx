@@ -83,7 +83,7 @@ export default function ChatHistoryBox() {
         <button
           onClick={() => void ask()}
           disabled={loading || !question.trim()}
-          className="font-mono text-[10px] uppercase tracking-[0.2em] text-accent hover:opacity-80 disabled:opacity-30 disabled:cursor-not-allowed transition-opacity px-3"
+          className="font-mono text-[10px] uppercase tracking-[0.2em] text-accent hover:opacity-80 disabled:opacity-30 disabled:cursor-not-allowed transition-opacity px-3 cursor-pointer"
         >
           ask
         </button>
