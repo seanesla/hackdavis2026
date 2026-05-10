@@ -9,6 +9,7 @@ import { TOOLS } from "@/lib/tools";
 import { TOOL_DECLARATIONS, ALLOWED_TOOL_NAMES } from "@/lib/toolDeclarations";
 import { isInsideSetbacks } from "@/lib/geometry";
 import { USER_ID, buildMemoryContext, saveSession } from "@/lib/backboard";
+import { rateLimit, rateLimitResponse } from "@/lib/rateLimit";
 import type { SitePlan, Step } from "@/lib/types";
 
 export const runtime = "nodejs";
@@ -218,6 +219,9 @@ RECOVERY FROM A BAD LAYOUT: If check_setbacks fails with one or more violations,
 Stop after finalize. You have at most ${MAX_ITERATIONS} turns. Use them wisely.`;
 
 export async function POST(req: Request) {
+  const limited = rateLimit(req, { bucket: "plan", limit: 5, windowMs: 60_000 });
+  if (!limited.ok) return rateLimitResponse(limited);
+
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
     return Response.json(

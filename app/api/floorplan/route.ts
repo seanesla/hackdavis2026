@@ -5,6 +5,7 @@ import {
   buildFloorPlanPrompt,
   floorPlanCacheKey,
 } from "@/lib/floorPlanPrompt";
+import { rateLimit, rateLimitResponse } from "@/lib/rateLimit";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -26,6 +27,9 @@ function evictIfFull() {
 }
 
 export async function POST(req: Request) {
+  const limited = rateLimit(req, { bucket: "floorplan", limit: 10, windowMs: 60_000 });
+  if (!limited.ok) return rateLimitResponse(limited);
+
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
     return Response.json(

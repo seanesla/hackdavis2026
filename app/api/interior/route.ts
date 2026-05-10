@@ -12,6 +12,7 @@ import {
   interiorCacheKey,
   targetItemCount,
 } from "@/lib/furniture";
+import { rateLimit, rateLimitResponse } from "@/lib/rateLimit";
 
 export const runtime = "nodejs";
 export const maxDuration = 30;
@@ -142,6 +143,9 @@ function rectsOverlap(a: Room, b: Room): boolean {
 }
 
 export async function POST(req: Request) {
+  const limited = rateLimit(req, { bucket: "interior", limit: 15, windowMs: 60_000 });
+  if (!limited.ok) return rateLimitResponse(limited);
+
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
     return Response.json(
