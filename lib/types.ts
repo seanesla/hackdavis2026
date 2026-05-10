@@ -3,23 +3,93 @@
 // All values in feet. building.{x,z} = front-left corner of footprint.
 export const STORY_HEIGHT_FT = 10;
 
-export type BuildingMaterial = "concrete" | "steel" | "wood" | "other";
-export type BuildingUseType = "residential" | "commercial" | "other";
-export type BuildingLayout = "open" | "divided";
+export const BUILDING_MATERIALS = [
+  "wood",
+  "brick",
+  "stucco",
+  "concrete",
+  "steel",
+  "glass",
+] as const;
+export type BuildingMaterial = (typeof BUILDING_MATERIALS)[number];
 
-export type SitePlanMeta = {
+export const STRUCTURE_TYPES = [
+  "house",
+  "apartment",
+  "office",
+  "warehouse",
+  "parking_garage",
+  "greenhouse",
+  "pavilion",
+] as const;
+export type StructureType = (typeof STRUCTURE_TYPES)[number];
+
+export type Building = {
+  x: number;
+  z: number;
+  w: number;
+  d: number;
+  stories: number;
   material?: BuildingMaterial;
-  useType?: BuildingUseType;
-  layout?: BuildingLayout;
-  floorAreaSqft?: number;
+  structure_type?: StructureType;
+};
+
+export const TREE_SPECIES = ["oak", "pine", "palm", "maple"] as const;
+export type TreeSpecies = (typeof TREE_SPECIES)[number];
+export type Tree = {
+  x: number;
+  z: number;
+  species: TreeSpecies;
+  // Trunk-to-tip height in feet. Foliage radius derived from this.
+  height: number;
+};
+
+export const WALKWAY_MATERIALS = ["flagstone", "concrete", "asphalt"] as const;
+export type WalkwayMaterial = (typeof WALKWAY_MATERIALS)[number];
+export type Walkway = {
+  x1: number;
+  z1: number;
+  x2: number;
+  z2: number;
+  width: number;
+  material: WalkwayMaterial;
+};
+
+export const FENCE_STYLES = ["wood", "wrought-iron", "hedge"] as const;
+export type FenceStyle = (typeof FENCE_STYLES)[number];
+export type Fence = {
+  sides: ("front" | "back" | "left" | "right")[];
+  style: FenceStyle;
+};
+
+export const STREET_PROPS = [
+  "bench",
+  "trash_can",
+  "mailbox",
+  "fire_hydrant",
+  "planter",
+  "bus_stop",
+  "stop_sign",
+  "dumpster",
+] as const;
+export type StreetPropKind = (typeof STREET_PROPS)[number];
+export type StreetProp = {
+  x: number;
+  z: number;
+  kind: StreetPropKind;
+  // Yaw in degrees. 0 = no rotation.
+  yaw?: number;
 };
 
 export type SitePlan = {
   lot: { width: number; depth: number };
   setbacks: { front: number; back: number; side: number };
-  building?: { x: number; z: number; w: number; d: number; stories: number };
+  buildings?: Building[];
   parking?: { x: number; z: number }[];
-  meta?: SitePlanMeta;
+  trees?: Tree[];
+  walkways?: Walkway[];
+  fences?: Fence[];
+  props?: StreetProp[];
 };
 
 export type Step = { tool: string; note: string; ok: boolean };

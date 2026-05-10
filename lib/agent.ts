@@ -1,24 +1,11 @@
-// AI integration seam. Voice flows depend only on these two functions.
-// planFromIntent: still a stub today; Role C swaps it when /api/plan is built.
-// chatTurn: tries real Gemini via /api/chat; falls back to varied canned
-//   replies if no key is configured (or upstream fails).
-
-import type { SitePlan, SitePlanMeta, Step } from "./types";
-import { mockPlan, mockSteps } from "./mockPlan";
+// AI seam for the freestyle conversation. Site planning itself goes through
+// /api/plan via the store's runFromPrompt — see lib/store.ts.
+//
+// chatTurn:
+//   - Tries the real Gemini-backed /api/chat first.
+//   - Falls back to a varied canned reply if no key is set or the API fails.
 
 export type TranscriptEntry = { who: "ai" | "user"; text: string };
-
-export async function planFromIntent(input: {
-  prompt?: string;
-  meta?: SitePlanMeta;
-}): Promise<{ plan: SitePlan; steps: Step[] }> {
-  await new Promise((r) => setTimeout(r, 200));
-  const plan: SitePlan = {
-    ...mockPlan,
-    meta: { ...(mockPlan.meta ?? {}), ...(input.meta ?? {}) },
-  };
-  return { plan, steps: mockSteps };
-}
 
 export async function chatTurn(history: TranscriptEntry[]): Promise<string> {
   // Try the real Gemini-backed route first.
@@ -126,7 +113,8 @@ function cannedChatTurn(history: TranscriptEntry[]): string {
   const candidates: string[] = [];
 
   if (/floor|stor(ies|y)|level/.test(last)) candidates.push(...FOLLOWUPS_FLOORS);
-  if (/concrete|steel|wood|timber|brick|frame/.test(last)) candidates.push(...FOLLOWUPS_MATERIAL);
+  if (/concrete|steel|wood|timber|brick|stucco|glass|frame/.test(last))
+    candidates.push(...FOLLOWUPS_MATERIAL);
   if (/residen|home|apartment|hous|live|living|commerc|office|retail|shop|store|mixed/.test(last))
     candidates.push(...FOLLOWUPS_USE);
   if (/lot|acre|sq ?ft|square ?feet|width|depth|setback|street|corner|slope/.test(last))

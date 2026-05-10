@@ -36,19 +36,19 @@ function PlanInner() {
   }, [promptParam, prompt, running, steps.length, runFromPrompt, isVoiceMode]);
 
   return (
-    <div className="relative flex h-screen w-screen overflow-hidden">
-      <AccentGrainient />
-      <SideRail />
+    <div className="relative h-screen w-screen overflow-hidden">
+      <AccentGrainient subtle />
       <motion.main
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         transition={{ duration: 0.7, delay: 0.2 }}
-        className="flex-1 relative"
+        className="absolute inset-0"
       >
         <Scene />
         {modeParam === "interview" && <InterviewFlow />}
         {modeParam === "freestyle" && <FreestyleFlow />}
       </motion.main>
+      <SideRail />
     </div>
   );
 }

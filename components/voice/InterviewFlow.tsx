@@ -1,7 +1,14 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { useStore, type InterviewAnswers, type InterviewKey } from "@/lib/store";
+import {
+  useStore,
+  type InterviewAnswers,
+  type InterviewKey,
+  type BuildingLayout,
+  type VoiceMaterial,
+  type VoiceUseType,
+} from "@/lib/store";
 import {
   preloadVoices,
   speak,
@@ -9,14 +16,9 @@ import {
   isSpeaking,
   useRecognizer,
 } from "@/lib/speech";
-import type {
-  BuildingLayout,
-  BuildingMaterial,
-  BuildingUseType,
-} from "@/lib/types";
 import MuteToggle from "@/components/voice/MuteToggle";
 
-type AnswerValue = number | BuildingLayout | BuildingMaterial | BuildingUseType;
+type AnswerValue = number | BuildingLayout | VoiceMaterial | VoiceUseType;
 
 type Question = {
   id: InterviewKey;
@@ -105,13 +107,16 @@ const INTERVIEW_Q: Question[] = [
   {
     id: "material",
     label: "material",
-    text: "What structural material do you prefer — concrete, steel, or another?",
-    retry: "Was that concrete, steel, wood, or something else?",
+    text: "What structural material do you prefer — concrete, steel, wood, brick, stucco, or glass?",
+    retry: "Was that concrete, steel, wood, brick, stucco, or glass?",
     parse: (raw) => {
       const cleaned = raw.toLowerCase();
       if (/concrete/.test(cleaned)) return "concrete";
-      if (/steel/.test(cleaned)) return "steel";
+      if (/steel|metal/.test(cleaned)) return "steel";
       if (/wood|timber/.test(cleaned)) return "wood";
+      if (/brick/.test(cleaned)) return "brick";
+      if (/stucco/.test(cleaned)) return "stucco";
+      if (/glass|curtain wall/.test(cleaned)) return "glass";
       if (/other|something else/.test(cleaned)) return "other";
       return null;
     },

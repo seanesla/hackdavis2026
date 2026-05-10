@@ -1,59 +1,99 @@
 "use client";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
-import { Grid, OrbitControls } from "@react-three/drei";
+import { ContactShadows, Grid, OrbitControls } from "@react-three/drei";
 import * as THREE from "three";
 import SitePlanMesh from "./SitePlanMesh";
 import { useStore } from "@/lib/store";
+import { useAccent } from "@/lib/accent";
 import type { SitePlan } from "@/lib/types";
 
 type Props = { siteplan?: SitePlan | null };
 
 export default function Scene({ siteplan }: Props) {
   const [interacted, setInteracted] = useState(false);
+  const accent = useAccent((s) => s.accent.hex);
 
   return (
     <Canvas
       shadows
-      gl={{ alpha: true }}
-      camera={{ position: [120, 110, 140], fov: 42 }}
+      dpr={[1, 1.5]}
+      gl={{
+        alpha: true,
+        antialias: true,
+        powerPreference: "high-performance",
+        // Logarithmic depth distribution — kills z-fighting on layered window
+        // trim/glass/mullion planes at long camera distances. At ~zero cost
+        // for our geometry budget. Pairs with a tighter near/far range
+        // (5/1500) to give the depth buffer enough precision to distinguish
+        // the fractional-foot offsets in window/door details.
+        logarithmicDepthBuffer: true,
+      }}
+      camera={{ position: [120, 110, 140], fov: 38, near: 5, far: 1500 }}
       onPointerDown={() => setInteracted(true)}
+      onCreated={({ gl }) => {
+        gl.toneMapping = THREE.ACESFilmicToneMapping;
+        gl.toneMappingExposure = 1.05;
+        // Try to recover when WebGL context is lost (GPU memory pressure, tab switch, etc.)
+        const canvas = gl.domElement;
+        canvas.addEventListener("webglcontextlost", (e) => {
+          e.preventDefault();
+          console.warn("WebGL context lost — will attempt restore");
+        });
+      }}
     >
-      <ambientLight intensity={0.55} />
+      {/* Hemisphere — sky tint above, inky bounce below. Matches contour bg. */}
+      <hemisphereLight args={["#e6dec8", "#0b0b0c", 0.55]} />
+
+      {/* Key light — warm, top-right, casts the architectural shadow. */}
       <directionalLight
-        position={[80, 120, 60]}
-        intensity={1.1}
+        position={[90, 150, 70]}
+        intensity={1.35}
+        color="#fff4dc"
         castShadow
-        shadow-mapSize={[2048, 2048]}
-        shadow-camera-left={-200}
-        shadow-camera-right={200}
-        shadow-camera-top={200}
-        shadow-camera-bottom={-200}
+        shadow-mapSize={[1024, 1024]}
+        shadow-camera-left={-220}
+        shadow-camera-right={220}
+        shadow-camera-top={220}
+        shadow-camera-bottom={-220}
         shadow-camera-near={1}
-        shadow-camera-far={400}
+        shadow-camera-far={500}
+        shadow-bias={-0.0004}
+        shadow-normalBias={0.02}
+      />
+      {/* Cool fill — opposite side, no shadow, lifts the dark face. */}
+      <directionalLight
+        position={[-110, 80, -70]}
+        intensity={0.35}
+        color="#9bb8d8"
+      />
+      {/* Accent rim — picks up the roof plate from below */}
+      <pointLight position={[0, 8, 0]} intensity={0.15} color={accent} distance={120} />
+
+      {/* Soft ground contact — replaces hard shadow plane, stays soft over contour bg. */}
+      <ContactShadows
+        position={[0, 0.02, 0]}
+        opacity={0.55}
+        scale={420}
+        blur={2.6}
+        far={120}
+        resolution={1024}
+        color="#000000"
+        frames={1}
       />
 
-      {/* Invisible shadow catcher — lets ContourBackground show through */}
-      <mesh
-        rotation={[-Math.PI / 2, 0, 0]}
-        position={[0, -0.05, 0]}
-        receiveShadow
-      >
-        <planeGeometry args={[1000, 1000]} />
-        <shadowMaterial transparent opacity={0.35} />
-      </mesh>
-
+      {/* Drafting grid — subtle, sits just below lot to avoid z-fight. */}
       <Grid
-        args={[500, 500]}
-        position={[0, 0, 0]}
+        args={[600, 600]}
+        position={[0, -0.02, 0]}
         cellSize={10}
-        cellThickness={0.5}
-        cellColor="#3f3f46"
+        cellThickness={0.4}
+        cellColor="#23232a"
         sectionSize={50}
-        sectionThickness={1}
-        sectionColor="#52525b"
-        fadeDistance={500}
-        fadeStrength={1.2}
+        sectionThickness={0.8}
+        sectionColor="#3a3a44"
+        fadeDistance={420}
+        fadeStrength={1.4}
       />
 
       <SitePlanMesh siteplan={siteplan} />
@@ -62,11 +102,12 @@ export default function Scene({ siteplan }: Props) {
         makeDefault
         minDistance={20}
         maxDistance={800}
-        maxPolarAngle={Math.PI / 2.1}
+        maxPolarAngle={Math.PI / 2.05}
         target={[0, 0, 0]}
         autoRotate={!interacted}
-        autoRotateSpeed={0.4}
+        autoRotateSpeed={0.35}
         enableDamping
+        dampingFactor={0.08}
       />
       <CameraRig siteplan={siteplan} />
     </Canvas>

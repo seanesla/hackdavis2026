@@ -36,6 +36,9 @@ yarn-error.log*
 # vercel
 .vercel
 
+# backboard thread persistence
+.backboard-threads.json
+
 # typescript
 *.tsbuildinfo
 next-env.d.ts
