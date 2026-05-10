@@ -11,6 +11,8 @@ import * as THREE from "three";
 import SitePlanMesh from "./SitePlanMesh";
 import { useStore } from "@/lib/store";
 import { useAccent } from "@/lib/accent";
+import { useCameraView } from "@/lib/cameraView";
+import { useViewMode } from "@/lib/viewMode";
 import type { SitePlan } from "@/lib/types";
 import { registerScene, unregisterScene } from "@/lib/sceneControls";
 
@@ -22,6 +24,7 @@ export default function Scene({ siteplan }: Props) {
   const autoRotate = useStore((s) => s.autoRotate);
   const setAutoRotate = useStore((s) => s.setAutoRotate);
   const gridVisible = useStore((s) => s.gridVisible);
+  const mode = useViewMode((s) => s.mode);
 
   return (
     <Canvas
@@ -127,16 +130,17 @@ export default function Scene({ siteplan }: Props) {
       <OrbitControls
         makeDefault
         minDistance={20}
-        maxDistance={800}
+        maxDistance={1500}
         maxPolarAngle={Math.PI / 2.05}
         target={[0, 0, 0]}
-        autoRotate={autoRotate}
+        autoRotate={autoRotate && mode === "perspective"}
         autoRotateSpeed={0.35}
         enableDamping
         dampingFactor={0.08}
       />
       <CameraRig siteplan={siteplan} />
       <SceneControlsBridge />
+      <CameraBroadcaster />
     </Canvas>
   );
 }
@@ -173,6 +177,7 @@ function CameraRig({ siteplan }: { siteplan?: SitePlan | null }) {
   const resetTick = useStore((s) => s.resetTick);
   const viewMode = useStore((s) => s.viewMode);
   const plan = siteplan !== undefined ? siteplan : storePlan;
+  const mode = useViewMode((s) => s.mode);
 
   const camera = useThree((s) => s.camera);
   const controls = useThree((s) => s.controls) as
@@ -184,6 +189,15 @@ function CameraRig({ siteplan }: { siteplan?: SitePlan | null }) {
     const span = plan && plan.lot.width > 0 && plan.lot.depth > 0
       ? Math.max(plan.lot.width, plan.lot.depth, 40)
       : fallbackSpan;
+    if (mode === "plan") {
+      // Top-down — high altitude with a tiny x/z nudge so OrbitControls
+      // doesn't hit the polar singularity at exactly straight down.
+      return new THREE.Vector3(0.01, span * 2.4, 0.01);
+    }
+    if (mode === "elevation") {
+      // Side view — looking due north along -z.
+      return new THREE.Vector3(0, span * 0.35, span * 1.9);
+    }
     const d = span * 1.3;
     if (viewMode === "top") {
       // Pure overhead. Tiny z offset prevents gimbal weirdness when
@@ -191,7 +205,7 @@ function CameraRig({ siteplan }: { siteplan?: SitePlan | null }) {
       return new THREE.Vector3(0, d * 1.4, 0.01);
     }
     return new THREE.Vector3(d, d * 0.85, d);
-  }, [plan?.lot.width, plan?.lot.depth, viewMode]);
+  }, [plan?.lot.width, plan?.lot.depth, viewMode, mode]);
 
   const remaining = useRef(0);
 
@@ -208,6 +222,44 @@ function CameraRig({ siteplan }: { siteplan?: SitePlan | null }) {
       controls.target.lerp(new THREE.Vector3(0, 0, 0), k);
       controls.update();
     }
+  });
+
+  return null;
+}
+
+// Broadcasts live camera state out of the R3F render loop into a zustand
+// store so 2D HUD overlays (NorthArrow, ScaleBar, TitleBlock) can render in
+// sync without forcing the 3D scene to re-render every frame.
+function CameraBroadcaster() {
+  const setView = useCameraView((s) => s.setView);
+  const camera = useThree((s) => s.camera);
+  const size = useThree((s) => s.size);
+  const controls = useThree((s) => s.controls) as
+    | { target: THREE.Vector3 }
+    | null;
+
+  useEffect(() => {
+    setView({
+      canvasHeight: size.height,
+      fov: (camera as THREE.PerspectiveCamera).fov,
+    });
+  }, [size.height, camera, setView]);
+
+  const tmpDir = useRef(new THREE.Vector3());
+  const fallbackTarget = useRef(new THREE.Vector3(0, 0, 0));
+
+  useFrame(() => {
+    const target = controls?.target ?? fallbackTarget.current;
+    const distance = camera.position.distanceTo(target);
+
+    // Project world +Z direction into camera view space; the resulting
+    // screen-plane angle is the rotation the N arrow needs so that "up"
+    // on screen always points at the lot's north.
+    tmpDir.current.set(0, 0, 1);
+    tmpDir.current.transformDirection(camera.matrixWorldInverse);
+    const angle = Math.atan2(tmpDir.current.x, -tmpDir.current.y);
+
+    setView({ distance, northAngle: angle });
   });
 
   return null;
