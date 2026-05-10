@@ -1,9 +1,10 @@
 "use client";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { motion } from "framer-motion";
 import { usePathname } from "next/navigation";
 import dynamic from "next/dynamic";
 import { useStore } from "@/lib/store";
+import { perfLog } from "@/lib/perfLog";
 
 const Hammer3D = dynamic(() => import("./Hammer3D"), { ssr: false });
 
@@ -133,7 +134,25 @@ export default function FloatingHammer() {
     }
   }, [slot, centerX, centerY, slotRect.x, slotRect.y]);
 
-  if (vw === 0) return null;
+  // Defer the R3F + three.js + GLB chunk until the hammer actually needs to
+  // appear. On the landing page (slot === "hidden") we skip rendering
+  // entirely, which keeps ~430 KB of three / fiber off the critical path.
+  // Once the user submits a prompt or navigates to /plan, slot flips and the
+  // chunk loads on demand.
+  const everShown = useRef(false);
+  if (slot !== "hidden") everShown.current = true;
+  const shouldRender = vw !== 0 && (slot !== "hidden" || everShown.current);
+
+  // First-mount perf marker — only emits in debug mode.
+  const loggedRef = useRef(false);
+  useEffect(() => {
+    if (shouldRender && !loggedRef.current) {
+      loggedRef.current = true;
+      perfLog("hammer3d:first-mount", performance.now());
+    }
+  }, [shouldRender]);
+
+  if (!shouldRender) return null;
 
   return (
     <motion.div

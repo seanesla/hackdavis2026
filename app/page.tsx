@@ -9,6 +9,7 @@ import ExamplePills from "@/components/landing/ExamplePills";
 import AccentPicker from "@/components/AccentPicker";
 import { isSpeechSupported, primeMicPermission } from "@/lib/speech";
 import { useStore } from "@/lib/store";
+import { perfLog } from "@/lib/perfLog";
 
 const AccentGrainient = dynamic(
   () => import("@/components/bg/AccentGrainient"),
@@ -34,6 +35,31 @@ export default function Home() {
   useEffect(() => {
     setVoiceSupported(isSpeechSupported());
   }, [setVoiceSupported]);
+
+  // Debug-only: dump landing-page perf metrics once after the load event.
+  // Silent unless Shift+D toggles the debug overlay on /plan first.
+  useEffect(() => {
+    const dump = () => {
+      const nav = performance.getEntriesByType("navigation")[0] as
+        | PerformanceNavigationTiming
+        | undefined;
+      const fcp = performance
+        .getEntriesByType("paint")
+        .find((p) => p.name === "first-contentful-paint")?.startTime;
+      const resources = performance.getEntriesByType("resource");
+      let bytes = 0;
+      for (const r of resources) bytes += (r as PerformanceResourceTiming).transferSize || 0;
+      perfLog("landing:nav", undefined, {
+        dcl: nav ? Math.round(nav.domContentLoadedEventEnd - nav.startTime) : null,
+        load: nav ? Math.round(nav.loadEventEnd - nav.startTime) : null,
+        fcp: fcp ? Math.round(fcp) : null,
+        transferKB: Math.round(bytes / 1024),
+        resources: resources.length,
+      });
+    };
+    if (document.readyState === "complete") dump();
+    else window.addEventListener("load", dump, { once: true });
+  }, []);
 
   const goToMode = (mode: "interview" | "freestyle") => {
     if (!voiceSupported) return;
