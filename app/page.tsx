@@ -78,10 +78,12 @@ export default function Home() {
   const goToMode = (mode: "interview" | "freestyle") => {
     if (!voiceSupported) return;
     primeMicPermission();
-    setLoading(true);
-    setTimeout(() => {
-      router.push(`/plan?mode=${mode}`);
-    }, 650);
+    // Voice flows render their own conversation UI on /plan — explicitly
+    // no LoadingCurtain hammer in this lane. Navigate directly without
+    // setLoading/setTimeout so the hammer never appears during the
+    // click → /plan transition (and there's no delay-with-no-feedback
+    // either).
+    router.push(`/plan?mode=${mode}`);
   };
 
   // Plays the build animation with a hard-coded mock plan — no API call.

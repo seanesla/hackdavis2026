@@ -222,6 +222,77 @@ export const TOOL_DECLARATIONS: FunctionDeclaration[] = [
     },
   },
   {
+    name: "update_building",
+    description:
+      "MUTATE an existing building IN PLACE. Use this — not place_building — when the user asks to CHANGE something about a building that already exists: resize ('make the house bigger', 'shrink it to 30x40'), restory ('add another floor'), restyle ('change to brick', 'glass facade'), retype ('turn it into a school', 'make it an apartment'), or move ('shift it 10ft to the right'). Pass 'index' (1-based, matches the order buildings were placed) plus ONLY the fields that change — omit unchanged fields. The tool re-validates lot bounds and overlap with other buildings.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        index: {
+          type: Type.INTEGER,
+          description:
+            "1-based index of the building to update (1 = first placed, 2 = second placed, etc.). Building counts and ordering are surfaced in the modify-mode CURRENT STATE block.",
+        },
+        x: { type: Type.NUMBER, description: "New front-left X (only if moving)." },
+        z: { type: Type.NUMBER, description: "New front-left Z (only if moving)." },
+        w: { type: Type.NUMBER, description: "New width along x (only if resizing)." },
+        d: { type: Type.NUMBER, description: "New depth along z (only if resizing)." },
+        stories: {
+          type: Type.INTEGER,
+          description: "New story count (only if changing height).",
+        },
+        material: {
+          type: Type.STRING,
+          enum: [...BUILDING_MATERIALS],
+          description: `New material. One of: ${BUILDING_MATERIALS.join(", ")}.`,
+        },
+        structure_type: {
+          type: Type.STRING,
+          enum: [...STRUCTURE_TYPES],
+          description: `New structure type — changes the EXTERIOR. One of: ${STRUCTURE_TYPES.join(", ")}.`,
+        },
+        program: {
+          type: Type.STRING,
+          description:
+            "New program label — drives the INTERIOR (rooms + furniture). Set verbatim from the user's brief, e.g. 'elementary school', 'fire station', 'public library'.",
+        },
+      },
+      required: ["index"],
+    },
+  },
+  {
+    name: "remove_building",
+    description:
+      "DELETE an existing building by 1-based index. Use this — not place_building — when the user asks to remove, delete, or get rid of a building that's already on the plan ('remove the second building', 'take out the garage', 'delete the warehouse'). Indices of remaining buildings shift down after a removal, so prefer to remove higher-numbered buildings first if removing several.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        index: {
+          type: Type.INTEGER,
+          description: "1-based index of the building to remove.",
+        },
+      },
+      required: ["index"],
+    },
+  },
+  {
+    name: "clear_layer",
+    description:
+      "WIPE an entire layer of the site at once. Use for sweeping removals like 'no trees', 'remove all the bushes', 'clear the parking', 'no fences', 'remove the pool'. Works on one layer per call. Does NOT touch buildings — use remove_building for those.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        layer: {
+          type: Type.STRING,
+          enum: ["parking", "trees", "walkways", "fences", "props", "bushes", "pools"],
+          description:
+            "Which layer to wipe. Use 'props' for street furniture (benches, trash cans, etc.).",
+        },
+      },
+      required: ["layer"],
+    },
+  },
+  {
     name: "finalize",
     description:
       "Mark the plan complete. Call this LAST, only after the building is placed and check_setbacks has confirmed it's valid. Calling this exits the planning loop.",
