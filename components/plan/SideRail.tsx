@@ -6,6 +6,7 @@ import { useStore } from "@/lib/store";
 import Step from "./Step";
 import AccentPicker from "@/components/AccentPicker";
 import CompartmentFire from "./CompartmentFire";
+import MintNftButton from "./MintNftButton";
 import { downloadPlan } from "@/lib/exportPlan";
 import { isSpeechSupported } from "@/lib/speech";
 
@@ -198,25 +199,28 @@ export default function SideRail() {
         ))}
       </ol>
 
-      <div className="px-6 py-4 border-t border-rule/60 flex items-center justify-between gap-3">
-        <button
-          type="button"
-          onClick={() =>
-            canExport && plan && downloadPlan({ prompt, plan, steps })
-          }
-          disabled={!canExport}
-          title={
-            canExport
-              ? "download this plan as a JSON file"
-              : "no plan to export yet"
-          }
-          className="font-mono text-[10px] uppercase tracking-[0.2em] text-mute hover:text-accent disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-        >
-          export ↓
-        </button>
-        <span className="font-mono text-[10px] uppercase tracking-[0.25em] text-mute/70">
-          built for hackdavis · v1 alpha
-        </span>
+      <div className="px-6 py-4 border-t border-rule/60 space-y-3">
+        <MintNftButton />
+        <div className="flex items-center justify-between gap-3">
+          <button
+            type="button"
+            onClick={() =>
+              canExport && plan && downloadPlan({ prompt, plan, steps })
+            }
+            disabled={!canExport}
+            title={
+              canExport
+                ? "download this plan as a JSON file"
+                : "no plan to export yet"
+            }
+            className="font-mono text-[10px] uppercase tracking-[0.2em] text-mute hover:text-accent disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+          >
+            export ↓
+          </button>
+          <span className="font-mono text-[10px] uppercase tracking-[0.25em] text-mute/70">
+            built for hackdavis · v1 alpha
+          </span>
+        </div>
       </div>
     </motion.aside>
   );

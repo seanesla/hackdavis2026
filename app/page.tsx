@@ -6,9 +6,23 @@ import { motion } from "framer-motion";
 import Hero from "@/components/landing/Hero";
 import PromptBar from "@/components/landing/PromptBar";
 import ExamplePills from "@/components/landing/ExamplePills";
+import LogoLoop from "@/components/landing/LogoLoop";
+import {
+  SiNextdotjs,
+  SiReact,
+  SiThreedotjs,
+  SiFramer,
+  SiTailwindcss,
+  SiGoogle,
+  SiSolana,
+  SiTypescript,
+  SiVercel,
+  SiGithub,
+} from "react-icons/si";
 import AccentPicker from "@/components/AccentPicker";
 import { isSpeechSupported, primeMicPermission } from "@/lib/speech";
 import { useStore } from "@/lib/store";
+import { perfLog } from "@/lib/perfLog";
 
 const AccentGrainient = dynamic(
   () => import("@/components/bg/AccentGrainient"),
@@ -21,6 +35,7 @@ export default function Home() {
   const loading = useStore((s) => s.loading);
   const voiceSupported = useStore((s) => s.voiceSupported);
   const setVoiceSupported = useStore((s) => s.setVoiceSupported);
+  const replayMockPlan = useStore((s) => s.replayMockPlan);
   const router = useRouter();
   const promptInputRef = useRef<HTMLInputElement>(null);
 
@@ -34,6 +49,31 @@ export default function Home() {
   useEffect(() => {
     setVoiceSupported(isSpeechSupported());
   }, [setVoiceSupported]);
+
+  // Debug-only: dump landing-page perf metrics once after the load event.
+  // Silent unless Shift+D toggles the debug overlay on /plan first.
+  useEffect(() => {
+    const dump = () => {
+      const nav = performance.getEntriesByType("navigation")[0] as
+        | PerformanceNavigationTiming
+        | undefined;
+      const fcp = performance
+        .getEntriesByType("paint")
+        .find((p) => p.name === "first-contentful-paint")?.startTime;
+      const resources = performance.getEntriesByType("resource");
+      let bytes = 0;
+      for (const r of resources) bytes += (r as PerformanceResourceTiming).transferSize || 0;
+      perfLog("landing:nav", undefined, {
+        dcl: nav ? Math.round(nav.domContentLoadedEventEnd - nav.startTime) : null,
+        load: nav ? Math.round(nav.loadEventEnd - nav.startTime) : null,
+        fcp: fcp ? Math.round(fcp) : null,
+        transferKB: Math.round(bytes / 1024),
+        resources: resources.length,
+      });
+    };
+    if (document.readyState === "complete") dump();
+    else window.addEventListener("load", dump, { once: true });
+  }, []);
 
   const goToMode = (mode: "interview" | "freestyle") => {
     if (!voiceSupported) return;
@@ -71,6 +111,16 @@ export default function Home() {
     document.addEventListener("mousedown", onMouseDown, true);
     return () => document.removeEventListener("mousedown", onMouseDown, true);
   }, []);
+
+  // Plays the build animation with a hard-coded mock plan — no API call.
+  // Lets you trigger the hammer chop + buildings dropping in for testing.
+  const playDemo = () => {
+    setLoading(true);
+    setTimeout(() => {
+      replayMockPlan();
+      router.push("/plan");
+    }, 650);
+  };
 
   return (
     <main
@@ -115,6 +165,54 @@ export default function Home() {
             requestAnimationFrame(() => promptInputRef.current?.focus());
           }}
         />
+        <button
+          type="button"
+          onClick={playDemo}
+          className="font-mono text-[11px] uppercase tracking-[0.25em] text-mute hover:text-accent transition-colors"
+        >
+          ▶ play demo build
+        </button>
+
+        <div className="w-full max-w-2xl mt-4">
+          <div className="flex items-center justify-center gap-3 mb-5">
+            <span className="h-px w-12 bg-rule/60" />
+            <span className="font-mono text-[11px] uppercase tracking-[0.4em] text-mute">
+              built with
+            </span>
+            <span className="h-px w-12 bg-rule/60" />
+          </div>
+          <div
+            className="relative h-16 text-paper [filter:drop-shadow(0_0_12px_rgba(255,255,255,0.18))]"
+            style={{
+              WebkitMaskImage:
+                "linear-gradient(to right, transparent 0, #000 14%, #000 86%, transparent 100%)",
+              maskImage:
+                "linear-gradient(to right, transparent 0, #000 14%, #000 86%, transparent 100%)",
+            }}
+          >
+            <LogoLoop
+              logos={[
+                { node: <SiNextdotjs />, title: "Next.js", href: "https://nextjs.org" },
+                { node: <SiReact />, title: "React", href: "https://react.dev" },
+                { node: <SiTypescript />, title: "TypeScript", href: "https://www.typescriptlang.org" },
+                { node: <SiThreedotjs />, title: "Three.js", href: "https://threejs.org" },
+                { node: <SiFramer />, title: "Framer Motion", href: "https://www.framer.com/motion" },
+                { node: <SiTailwindcss />, title: "Tailwind CSS", href: "https://tailwindcss.com" },
+                { node: <SiGoogle />, title: "Google Gemini", href: "https://ai.google.dev" },
+                { node: <SiSolana />, title: "Solana", href: "https://solana.com" },
+                { node: <SiVercel />, title: "Vercel", href: "https://vercel.com" },
+                { node: <SiGithub />, title: "GitHub", href: "https://github.com" },
+              ]}
+              speed={45}
+              direction="left"
+              logoHeight={44}
+              gap={72}
+              ariaLabel="Built with"
+              scaleOnHover
+              hoverSpeed={15}
+            />
+          </div>
+        </div>
       </motion.div>
 
       <motion.footer

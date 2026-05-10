@@ -109,7 +109,7 @@ class ModelErrorBoundary extends Component<
   }
   componentDidCatch(err: unknown) {
     if (process.env.NODE_ENV === "development") {
-      // eslint-disable-next-line no-console
+       
       console.warn("[GltfOrFallback] using procedural fallback:", err);
     }
   }

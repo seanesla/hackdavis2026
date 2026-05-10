@@ -1,9 +1,10 @@
 "use client";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { motion } from "framer-motion";
 import { usePathname } from "next/navigation";
 import dynamic from "next/dynamic";
 import { useStore } from "@/lib/store";
+import { perfLog } from "@/lib/perfLog";
 
 const Hammer3D = dynamic(() => import("./Hammer3D"), { ssr: false });
 
@@ -106,6 +107,20 @@ export default function FloatingHammer() {
 
   const onPlan = pathname?.startsWith("/plan") ?? false;
 
+  // Don't start the hammer chop until the floating hammer has finished its
+  // 750ms fly-to-sidebar animation. Otherwise it strikes mid-flight, which
+  // looks weird and reads as "sideways" because it's hammering while the
+  // div is still translating across the screen.
+  const [settled, setSettled] = useState(false);
+  useEffect(() => {
+    if (slot !== "sidebar") {
+      setSettled(false);
+      return;
+    }
+    const timer = setTimeout(() => setSettled(true), 800);
+    return () => clearTimeout(timer);
+  }, [slot]);
+
   const { centerX, centerY } = useMemo(
     () => ({
       centerX:
@@ -133,7 +148,25 @@ export default function FloatingHammer() {
     }
   }, [slot, centerX, centerY, slotRect.x, slotRect.y]);
 
-  if (vw === 0) return null;
+  // Defer the R3F + three.js + GLB chunk until the hammer actually needs to
+  // appear. On the landing page (slot === "hidden") we skip rendering
+  // entirely, which keeps ~430 KB of three / fiber off the critical path.
+  // Once the user submits a prompt or navigates to /plan, slot flips and the
+  // chunk loads on demand.
+  const everShown = useRef(false);
+  if (slot !== "hidden") everShown.current = true;
+  const shouldRender = vw !== 0 && (slot !== "hidden" || everShown.current);
+
+  // First-mount perf marker — only emits in debug mode.
+  const loggedRef = useRef(false);
+  useEffect(() => {
+    if (shouldRender && !loggedRef.current) {
+      loggedRef.current = true;
+      perfLog("hammer3d:first-mount", performance.now());
+    }
+  }, [shouldRender]);
+
+  if (!shouldRender) return null;
 
   // r3f's <canvas> defaults to pointer-events: auto, which would block
   // clicks underneath the floating hammer (the parent's pointer-events:
@@ -177,7 +210,7 @@ export default function FloatingHammer() {
     >
       <Hammer3D
         isLoading={waiting}
-        forging={forging}
+        forging={forging && settled}
         subtle={slot === "sidebar"}
         interactive={slot === "sidebar"}
       />

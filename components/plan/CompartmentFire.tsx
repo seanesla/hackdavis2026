@@ -16,22 +16,34 @@ const HAMMER_ARRIVAL_DELAY = 850;
  * over from the center pose and arrives ON TOP of this fire (the floating
  * hammer is fixed-positioned at z-90; this canvas sits inside the sidebar
  * at z-10).
+ *
+ * Lights only while the agent is actively building (running && plan !== null)
+ * — i.e., during the chop animation. Goes out the moment the plan finalizes,
+ * matching the forging metaphor: heat during the hammering, not after.
  */
 export default function CompartmentFire() {
-  const loading = useStore((s) => s.loading);
   const running = useStore((s) => s.running);
+  const plan = useStore((s) => s.plan);
   const accent = useAccent((s) => s.accent.hex);
+
+  // Compute forging as a boolean OUTSIDE the effect. The store's `plan`
+  // reference changes on every stage replay (every ~800ms), so depending on
+  // `plan` directly would clear and restart the 850ms timer between every
+  // stage — and the timer would never get to fire. The boolean only flips
+  // when forging actually starts or stops, so the effect only re-runs then.
+  const forging = running && plan !== null;
 
   const [active, setActive] = useState(false);
 
   useEffect(() => {
-    const settled = !loading && !running;
-    if (settled) {
+    if (forging) {
+      // Wait for the hammer to finish flying into the sidebar before lighting
+      // up — otherwise the fire flashes inside an empty compartment.
       const t = window.setTimeout(() => setActive(true), HAMMER_ARRIVAL_DELAY);
       return () => window.clearTimeout(t);
     }
     setActive(false);
-  }, [loading, running]);
+  }, [forging]);
 
   return (
     <div className="absolute inset-0 pointer-events-none">

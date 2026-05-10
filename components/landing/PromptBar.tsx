@@ -4,6 +4,19 @@ import { motion } from "framer-motion";
 import { useRouter } from "next/navigation";
 import PromptDropdown from "./PromptDropdown";
 
+// Warm the heavy 3D chunks (R3F + three + Hammer3D) on the first sign of
+// user intent so the fly-in animation isn't bottlenecked on a cold network
+// fetch. The chunks are deferred off the landing critical path; we just
+// pull them in a fraction of a second early. Idempotent — only runs once.
+let prefetched3D = false;
+function prefetch3DChunks() {
+  if (prefetched3D || typeof window === "undefined") return;
+  prefetched3D = true;
+  // Fire-and-forget; bundler resolves these to the same chunks the
+  // FloatingHammer + Scene dynamic imports would load.
+  import("@/components/hammer/Hammer3D").catch(() => {});
+}
+
 type Props = {
   value: string;
   onValueChange: (v: string) => void;
@@ -74,7 +87,10 @@ export default function PromptBar({
           ref={inputRef}
           value={value}
           onChange={(e) => onValueChange(e.target.value)}
-          onFocus={() => setFocused(true)}
+          onFocus={() => {
+            setFocused(true);
+            prefetch3DChunks();
+          }}
           onBlur={() => setFocused(false)}
           onKeyDown={(e) => {
             if (e.key === "Enter") handleSubmit();

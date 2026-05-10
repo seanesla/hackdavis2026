@@ -4,14 +4,22 @@ import { motion } from "framer-motion";
 export default function Hero() {
   return (
     <div className="flex flex-col items-center text-center">
+      {/*
+        LCP element. Don't opacity-animate this — that delays when the
+        browser reports the LCP paint and tanks the score on slow networks.
+        We keep the small y-slide for entrance polish. fetchPriority="high"
+        nudges the browser to load this ahead of the JS chunks below it.
+      */}
       <motion.img
         src="/parcel-logo.gif"
         alt="parcel"
         className="select-none w-[clamp(20rem,72vw,56rem)] h-auto"
-        initial={{ opacity: 0, y: 12 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.6, delay: 0.1 }}
+        initial={{ y: 12 }}
+        animate={{ y: 0 }}
+        transition={{ duration: 0.5 }}
         draggable={false}
+        fetchPriority="high"
+        decoding="async"
       />
 
       <motion.div

@@ -10,7 +10,6 @@ import {
   type VoiceUseType,
 } from "@/lib/store";
 import {
-  preloadVoices,
   speak,
   stopSpeaking,
   isSpeaking,
@@ -245,7 +244,7 @@ export default function InterviewFlow() {
       cancelled = true;
       stopSpeaking();
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+     
   }, [phase, interviewIndex]);
 
   // Speak confirmation when we transition into "confirming".

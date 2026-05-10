@@ -45,7 +45,7 @@ export default function LoadingCurtain() {
               delay: 0.4,
             }}
           >
-            drafting…
+            planning…
           </motion.div>
         </motion.div>
       )}
