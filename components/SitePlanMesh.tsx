@@ -26,7 +26,9 @@ function LODSentinel() {
 import { useStore } from "@/lib/store";
 import { useAccent } from "@/lib/accent";
 import { useDebugStore } from "@/lib/debugStore";
+import { useDimensions } from "@/lib/dimensions";
 import { rectsOverlap, type Rect } from "@/lib/geometry";
+import DimensionLines from "./plan/DimensionLines";
 import {
   STORY_HEIGHT_FT,
   type BuildingMaterial,
@@ -198,6 +200,7 @@ export default function SitePlanMesh({ siteplan }: Props) {
   const accent = useAccent((s) => s.accent.hex);
   const plan = siteplan !== undefined ? siteplan : storePlan;
   const debug = useDebugOverlay();
+  const showDimensions = useDimensions((s) => s.show);
 
   if (!plan || plan.lot.width <= 0 || plan.lot.depth <= 0) {
     return (
@@ -253,6 +256,83 @@ export default function SitePlanMesh({ siteplan }: Props) {
         />
       )}
 
+      {/* Engineering layer — property line + setback envelope visible to
+          the user by default (lifted out of the debug-only overlay). Reads
+          as a civil-engineering deliverable instead of a game scene. */}
+      <Line
+        points={[
+          [0, 0.14, 0],
+          [lot.width, 0.14, 0],
+          [lot.width, 0.14, lot.depth],
+          [0, 0.14, lot.depth],
+          [0, 0.14, 0],
+        ]}
+        color="#e8e2d5"
+        lineWidth={2.2}
+        transparent
+        opacity={0.78}
+      />
+      {/* PL corner ticks */}
+      {[
+        [0, 0],
+        [lot.width, 0],
+        [lot.width, lot.depth],
+        [0, lot.depth],
+      ].map(([cx, cz], i) => (
+        <Line
+          key={`pl-tick-${i}`}
+          points={[
+            [cx - 1.4, 0.15, cz - 1.4],
+            [cx + 1.4, 0.15, cz + 1.4],
+          ]}
+          color="#e8e2d5"
+          lineWidth={2.2}
+        />
+      ))}
+      <Line
+        points={[
+          [setbacks.side, 0.18, setbacks.front],
+          [lot.width - setbacks.side, 0.18, setbacks.front],
+          [lot.width - setbacks.side, 0.18, lot.depth - setbacks.back],
+          [setbacks.side, 0.18, lot.depth - setbacks.back],
+          [setbacks.side, 0.18, setbacks.front],
+        ]}
+        color="#7dd3fc"
+        lineWidth={1.2}
+        dashed
+        dashSize={3}
+        gapSize={2}
+        transparent
+        opacity={0.55}
+      />
+      <Html
+        position={[lot.width / 2, 0.4, setbacks.front]}
+        center
+        distanceFactor={140}
+      >
+        <div className="pointer-events-none font-mono text-[9px] tracking-wider px-1 py-0.5 rounded-sm bg-cyan-300/80 text-ink whitespace-nowrap">
+          FRONT {Math.round(setbacks.front)}&apos;
+        </div>
+      </Html>
+      <Html
+        position={[lot.width / 2, 0.4, lot.depth - setbacks.back]}
+        center
+        distanceFactor={140}
+      >
+        <div className="pointer-events-none font-mono text-[9px] tracking-wider px-1 py-0.5 rounded-sm bg-cyan-300/80 text-ink whitespace-nowrap">
+          BACK {Math.round(setbacks.back)}&apos;
+        </div>
+      </Html>
+      <Html
+        position={[setbacks.side, 0.4, lot.depth / 2]}
+        center
+        distanceFactor={140}
+      >
+        <div className="pointer-events-none font-mono text-[9px] tracking-wider px-1 py-0.5 rounded-sm bg-cyan-300/80 text-ink whitespace-nowrap">
+          SIDE {Math.round(setbacks.side)}&apos;
+        </div>
+      </Html>
+
       {validBuildings.map((b, i) => {
         // The click handler keys on the original index in plan.buildings so
         // it round-trips with the server route, which also reads from the
@@ -294,6 +374,10 @@ export default function SitePlanMesh({ siteplan }: Props) {
           delay={i * 0.04}
         />
       ))}
+
+      {showDimensions && (
+        <DimensionLines lot={lot} buildings={validBuildings} />
+      )}
     </group>
   );
 }
