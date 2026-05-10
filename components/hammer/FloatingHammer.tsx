@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { motion } from "framer-motion";
+import { motion, useMotionValue, animate } from "framer-motion";
 import { usePathname } from "next/navigation";
 import dynamic from "next/dynamic";
 import { useStore } from "@/lib/store";
@@ -17,10 +17,16 @@ const SIDEBAR_SCALE = 1;
 
 // Used while the sidebar compartment hasn't mounted yet (e.g. on the landing
 // page, or the first frame after navigating to /plan). Matches the
-// `h-[400px]` div in `components/plan/SideRail.tsx` so the canvas size is
+// `h-[260px]` div in `components/plan/SideRail.tsx` so the canvas size is
 // stable across slots.
 const FALLBACK_W = 400;
-const FALLBACK_H = 400;
+const FALLBACK_H = 260;
+
+// The drafting hammer centers in the full renderer area (whole viewport),
+// not in the "visible scene area" right of the SideRail. The SideRail is
+// glass over the renderer, so the hammer reading as centered in the
+// viewport keeps it where the user expects without snapping to the right
+// every time /plan loads.
 
 type Slot = "center" | "sidebar" | "hidden";
 
@@ -54,38 +60,42 @@ export default function FloatingHammer() {
     return () => window.removeEventListener("resize", updateViewport);
   }, []);
 
-  // Track the SideRail's hammer compartment. The SideRail slides in over
-  // 600ms via a CSS transform, which moves the slot's screen position every
-  // frame without firing any layout/resize events — so we poll on rAF for
-  // the first second to follow it, then stop. ResizeObserver wouldn't help
-  // here because transforms don't change the layout box.
+  // Track the SideRail's hammer compartment continuously while on /plan.
+  // The SideRail slides in via CSS transform — transforms move the slot's
+  // screen position every frame without firing resize or ResizeObserver
+  // events, so we have to poll. Earlier this was time-bounded to 1s to
+  // "save work," but that left slotRect stale forever after the cap, so
+  // any later layout shift (font loads, dev-tools opening, browser zoom,
+  // sidebar content reflow) drifted the hammer off-center until a window
+  // resize. Polling on rAF forever is microseconds per frame and the
+  // shallow-equal short-circuit below means React only re-renders when
+  // the rect actually changes — no perf cost.
+  // On leaving /plan, reset slotRect to the fallback so the centered pose
+  // is deterministic across visits.
   useEffect(() => {
-    const measure = () => {
-      const el = document.getElementById("hammer-slot");
-      if (!el) return;
-      const r = el.getBoundingClientRect();
-      setSlotRect((prev) =>
-        prev.x === r.left && prev.y === r.top &&
-        prev.w === r.width && prev.h === r.height
-          ? prev
-          : { x: r.left, y: r.top, w: r.width, h: r.height },
-      );
-    };
+    if (!pathname?.startsWith("/plan")) {
+      setSlotRect({ x: 0, y: 0, w: FALLBACK_W, h: FALLBACK_H });
+      return;
+    }
 
-    const startTime = performance.now();
     let rafId = 0;
     const pollFrame = () => {
-      measure();
-      if (performance.now() - startTime < 1000) {
-        rafId = requestAnimationFrame(pollFrame);
+      const el = document.getElementById("hammer-slot");
+      if (el) {
+        const r = el.getBoundingClientRect();
+        setSlotRect((prev) =>
+          prev.x === r.left && prev.y === r.top &&
+          prev.w === r.width && prev.h === r.height
+            ? prev
+            : { x: r.left, y: r.top, w: r.width, h: r.height },
+        );
       }
+      rafId = requestAnimationFrame(pollFrame);
     };
     rafId = requestAnimationFrame(pollFrame);
 
-    window.addEventListener("resize", measure);
     return () => {
       cancelAnimationFrame(rafId);
-      window.removeEventListener("resize", measure);
     };
   }, [pathname]);
 
@@ -152,38 +162,67 @@ export default function FloatingHammer() {
     }
   }, [shouldRender]);
 
+  // Drive position via motion values so we can distinguish two cases:
+  //   1. Slot CHANGED (e.g. center → sidebar) — tween smoothly over 750ms.
+  //   2. Slot tracking inside the same slot (slotRect updates as the panel
+  //      animates in or layout reflows) — set() instantly so the hammer
+  //      stays glued to the panel rather than chasing it through a tween.
+  // Using framer's declarative animate={{x: target.x}} would re-start a
+  // 750ms tween every time slotRect.x updated, which is why the hammer
+  // appeared "stuck to the screen" — it was perpetually mid-tween, never
+  // catching up to the panel's true position.
+  const x = useMotionValue(centerX);
+  const y = useMotionValue(-(vh * 1.1));
+  const scaleMV = useMotionValue(CENTER_SCALE);
+  const opacityMV = useMotionValue(0);
+  const rotateMV = useMotionValue(-10);
+
+  const prevSlotRef = useRef<Slot | null>(null);
+  useEffect(() => {
+    if (vw === 0) return;
+    const slotChanged = prevSlotRef.current !== slot;
+    prevSlotRef.current = slot;
+
+    const tween = { duration: 0.75, ease: [0.22, 1, 0.36, 1] as const };
+    if (slotChanged) {
+      animate(x, target.x, tween);
+      animate(y, target.y, tween);
+      animate(scaleMV, target.scale, tween);
+      animate(opacityMV, target.opacity, { duration: 0.4 });
+      animate(rotateMV, 0, tween);
+    } else {
+      // Same slot, only slotRect/centerX/centerY changed — track instantly.
+      // scale/opacity/rotate aren't slot-tracking-dependent, so leave them
+      // at whatever the last tween settled them at.
+      x.set(target.x);
+      y.set(target.y);
+    }
+  }, [slot, target.x, target.y, target.scale, target.opacity, vw, x, y, scaleMV, opacityMV, rotateMV]);
+
   if (!shouldRender) return null;
+
+  // r3f's <canvas> defaults to pointer-events: auto, which would block
+  // clicks underneath the floating hammer (the parent's pointer-events:
+  // none doesn't propagate, since pointer-events isn't inherited). Force
+  // it off unless the hammer is in interactive sidebar mode.
+  const canvasInteractive = slot === "sidebar";
 
   return (
     <motion.div
-      className="fixed pointer-events-none z-[90]"
+      className={`fixed pointer-events-none z-[90] [&_canvas]:!w-full [&_canvas]:!h-full ${
+        canvasInteractive ? "" : "[&_*]:!pointer-events-none"
+      }`}
       style={{
         top: 0,
         left: 0,
         width: slotRect.w,
         height: slotRect.h,
         transformOrigin: "top left",
-      }}
-      initial={{
-        x: centerX,
-        y: -(vh * 1.1),
-        scale: CENTER_SCALE,
-        opacity: 0,
-        rotate: -10,
-      }}
-      animate={{
-        x: target.x,
-        y: target.y,
-        scale: target.scale,
-        opacity: target.opacity,
-        rotate: 0,
-      }}
-      transition={{
-        x: { type: "tween", duration: 0.75, ease: [0.22, 1, 0.36, 1] },
-        y: { type: "tween", duration: 0.75, ease: [0.22, 1, 0.36, 1] },
-        scale: { type: "tween", duration: 0.75, ease: [0.22, 1, 0.36, 1] },
-        opacity: { duration: 0.4 },
-        rotate: { type: "tween", duration: 0.75, ease: [0.22, 1, 0.36, 1] },
+        x,
+        y,
+        scale: scaleMV,
+        opacity: opacityMV,
+        rotate: rotateMV,
       }}
     >
       <Hammer3D

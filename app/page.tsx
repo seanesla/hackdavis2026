@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import { useRouter } from "next/navigation";
 import { motion } from "framer-motion";
@@ -37,6 +37,7 @@ export default function Home() {
   const setVoiceSupported = useStore((s) => s.setVoiceSupported);
   const replayMockPlan = useStore((s) => s.replayMockPlan);
   const router = useRouter();
+  const promptInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     // Returning to the landing page should never show stale "drafting…" state.
@@ -83,6 +84,34 @@ export default function Home() {
     }, 650);
   };
 
+  // Click anywhere on the page → focus the prompt input, unless the click
+  // landed on something that handles its own click (button/link/input/etc).
+  // Document-level + capture so it catches clicks regardless of React event
+  // bubbling through canvases, framer-motion wrappers, or stopPropagation.
+  useEffect(() => {
+    // Use mousedown (not click) so we can read document.activeElement BEFORE
+    // the browser changes focus. By click time the input has already blurred,
+    // and we'd refocus it — which re-opens the past-plans dropdown forever.
+    const onMouseDown = (e: MouseEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (!target) return;
+      // If the input is currently focused, the user is blurring on purpose.
+      if (document.activeElement === promptInputRef.current) return;
+      if (
+        target.closest(
+          "button, a, input, textarea, select, label, [role='radio'], [role='button']",
+        )
+      ) {
+        return;
+      }
+      // Defer focus so we don't fight the browser's own focus handling for
+      // the click target.
+      requestAnimationFrame(() => promptInputRef.current?.focus());
+    };
+    document.addEventListener("mousedown", onMouseDown, true);
+    return () => document.removeEventListener("mousedown", onMouseDown, true);
+  }, []);
+
   // Plays the build animation with a hard-coded mock plan — no API call.
   // Lets you trigger the hammer chop + buildings dropping in for testing.
   const playDemo = () => {
@@ -94,21 +123,23 @@ export default function Home() {
   };
 
   return (
-    <main className="relative flex-1 flex flex-col items-center justify-center px-6 py-12 overflow-hidden">
+    <main
+      className="relative flex flex-col items-center px-6 py-12 h-screen overflow-y-auto"
+    >
       <AccentGrainient />
 
       <motion.header
-        className="absolute top-0 left-0 right-0 flex items-center justify-end px-6 py-5"
+        className="fixed top-0 left-0 right-0 flex items-center justify-end px-6 py-5 z-40 pointer-events-none"
         animate={{ opacity: loading ? 0 : 1 }}
         transition={{ duration: 0.35 }}
       >
-        <div className="flex items-center gap-5">
+        <div className="flex items-center gap-5 pointer-events-auto">
           <AccentPicker />
           <a
             href="https://github.com/seanesla/hackdavis2026"
             target="_blank"
             rel="noopener noreferrer"
-            className="font-mono text-xs text-mute hover:text-paper transition-colors"
+            className="font-mono text-xs text-mute hover:text-paper transition-colors cursor-pointer"
           >
             github ↗
           </a>
@@ -116,7 +147,7 @@ export default function Home() {
       </motion.header>
 
       <motion.div
-        className="flex flex-col items-center gap-12 w-full"
+        className="flex-1 flex flex-col items-center justify-center gap-12 w-full"
         animate={{ opacity: loading ? 0 : 1, y: loading ? -20 : 0 }}
         transition={{ duration: 0.45, ease: [0.4, 0, 0.6, 1] }}
       >
@@ -125,9 +156,15 @@ export default function Home() {
           value={prompt}
           onValueChange={setPrompt}
           onSubmit={() => setLoading(true)}
+          inputRef={promptInputRef}
         />
         <ModeButtons supported={voiceSupported} onPick={goToMode} />
-        <ExamplePills onPick={setPrompt} />
+        <ExamplePills
+          onPick={(ex) => {
+            setPrompt(ex);
+            requestAnimationFrame(() => promptInputRef.current?.focus());
+          }}
+        />
         <button
           type="button"
           onClick={playDemo}
@@ -179,11 +216,11 @@ export default function Home() {
       </motion.div>
 
       <motion.footer
-        className="absolute bottom-5 left-0 right-0 text-center font-mono text-[10px] uppercase tracking-[0.2em] text-mute/60"
+        className="pt-4 text-center font-mono text-[10px] uppercase tracking-[0.2em] text-mute/60 pointer-events-none"
         animate={{ opacity: loading ? 0 : 1 }}
         transition={{ duration: 0.35 }}
       >
-        stage 0 of construction
+        built for hackdavis · v1 alpha
       </motion.footer>
     </main>
   );
@@ -249,7 +286,7 @@ function ModeButton({
       className={`group flex flex-col items-center gap-0.5 px-4 py-2 rounded-md border transition-colors ${
         disabled
           ? "border-rule/40 cursor-not-allowed opacity-50"
-          : "border-rule hover:border-accent bg-ink/40 backdrop-blur-md"
+          : "border-rule hover:border-accent bg-ink/40 backdrop-blur-md cursor-pointer"
       }`}
     >
       <span

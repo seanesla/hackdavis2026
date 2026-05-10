@@ -3,6 +3,7 @@ import {
   BUILDING_MATERIALS,
   BUSH_VARIETIES,
   FENCE_STYLES,
+  POOL_SHAPES,
   STREET_PROPS,
   STRUCTURE_TYPES,
   TREE_SPECIES,
@@ -50,6 +51,11 @@ export const TOOL_DECLARATIONS: FunctionDeclaration[] = [
           type: Type.STRING,
           enum: [...STRUCTURE_TYPES],
           description: `Optional structure type — selects a specialized 3D treatment. One of: ${STRUCTURE_TYPES.join(", ")}. Use 'parking_garage' for multi-level parking decks (renders as open slabs on columns, no walls). 'greenhouse' for nurseries / botanical structures (translucent glass with frame ribs + gable roof). 'pavilion' for open shelters / picnic structures / gazebos (roof on columns, no walls). 'house', 'apartment', 'office', 'warehouse' all use the standard massing. Pick what the user describes; default is 'house' or 'office' depending on program — only set this when the user clearly asks for a non-standard structure.`,
+        },
+        program: {
+          type: Type.STRING,
+          description:
+            "Short free-form description of the building's USE — drives the INTERIOR (rooms + furniture). Examples: 'single-family house', 'elementary school', 'high school', 'fire station', 'public library', 'corner cafe', 'restaurant', 'hospital', 'auto repair shop', 'art gallery', 'church', 'gym', 'retail store'. ALWAYS set this from the user's brief verbatim if they named a building type. If the user said 'school' set 'school'; if they said 'fire station' set 'fire station'; if generic ('a building', 'an office') leave unset and the renderer falls back to the structure_type's default program. Orthogonal to structure_type — a fire station might still use structure_type='house' for the gable-roof massing while program='fire station' drives the interior.",
         },
       },
       required: ["x", "z", "w", "d", "stories"],
@@ -193,6 +199,26 @@ export const TOOL_DECLARATIONS: FunctionDeclaration[] = [
         },
       },
       required: ["count", "placement", "variety"],
+    },
+  },
+  {
+    name: "place_pool",
+    description:
+      "Place a swimming pool on the lot. Renders as a recessed pool of water with a thin coping border. Call when the user mentions a pool, swimming pool, lap pool, plunge pool, or spa. (x, z) is the FRONT-LEFT corner of the pool's bounding box. Pools must NOT overlap any building. Place the pool inside the buildable envelope or in the back yard between the back setback and the building. Reasonable sizes: residential rectangle pool 12-20ft × 25-40ft; round pool 14-20ft diameter; lap pool 8-12ft × 40-60ft.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        x: { type: Type.NUMBER, description: "Front-left X of pool bbox, in lot coords." },
+        z: { type: Type.NUMBER, description: "Front-left Z of pool bbox, in lot coords." },
+        w: { type: Type.NUMBER, description: "Width of pool bbox along x, in feet." },
+        d: { type: Type.NUMBER, description: "Depth of pool bbox along z, in feet." },
+        shape: {
+          type: Type.STRING,
+          enum: [...POOL_SHAPES],
+          description: `Pool shape. One of: ${POOL_SHAPES.join(", ")}. 'rectangle' = standard or lap pool. 'round' = circle inscribed in the bbox (set w == d). 'kidney' = curved freeform residential shape that fits inside the bbox. Default rectangle when unsure.`,
+        },
+      },
+      required: ["x", "z", "w", "d", "shape"],
     },
   },
   {

@@ -43,6 +43,71 @@ export const runtime = "nodejs";
 export const maxDuration = 60;
 
 const MAX_ITERATIONS = 20;
+// Modify mode is bounded much tighter — most edits are 1–3 calls
+// (e.g. place_trees + finalize). 8 iterations is plenty and fails fast
+// if the model gets stuck retrying setback violations.
+const MAX_MODIFY_ITERATIONS = 8;
+
+function describeModifyState(plan: SitePlan): string {
+  const buildable = {
+    xMin: plan.setbacks.side,
+    xMax: plan.lot.width - plan.setbacks.side,
+    zMin: plan.setbacks.front,
+    zMax: plan.lot.depth - plan.setbacks.back,
+  };
+  const buildings = (plan.buildings ?? []).map((b, i) => {
+    const tags = [
+      `#${i + 1}`,
+      `x=${b.x}-${b.x + b.w}`,
+      `z=${b.z}-${b.z + b.d}`,
+      `${b.w}x${b.d}ft`,
+      `${b.stories} stories`,
+    ];
+    if (b.material) tags.push(b.material);
+    if (b.structure_type) tags.push(b.structure_type);
+    if (b.program) tags.push(`program=${b.program}`);
+    return `  - ${tags.join(", ")}`;
+  });
+  const counts: string[] = [];
+  if (plan.parking?.length) counts.push(`${plan.parking.length} parking stalls`);
+  if (plan.trees?.length) counts.push(`${plan.trees.length} trees`);
+  if (plan.walkways?.length) counts.push(`${plan.walkways.length} walkways`);
+  if (plan.fences?.length) counts.push(`${plan.fences.length} fence segments`);
+  if (plan.bushes?.length) counts.push(`${plan.bushes.length} bushes`);
+  if (plan.pools?.length) counts.push(`${plan.pools.length} pools`);
+  if (plan.props?.length) counts.push(`${plan.props.length} street props`);
+
+  const lines = [
+    `Lot: ${plan.lot.width}x${plan.lot.depth} ft.`,
+    `Setbacks: front=${plan.setbacks.front}, back=${plan.setbacks.back}, side=${plan.setbacks.side}.`,
+    `Buildable envelope: x in [${buildable.xMin}, ${buildable.xMax}], z in [${buildable.zMin}, ${buildable.zMax}]. Any new place_building MUST satisfy x >= ${buildable.xMin} AND x + w <= ${buildable.xMax} AND z >= ${buildable.zMin} AND z + d <= ${buildable.zMax}.`,
+  ];
+  if (buildings.length) {
+    lines.push(`Existing buildings (do NOT overlap; do NOT re-place):`);
+    lines.push(...buildings);
+  } else {
+    lines.push(`No buildings yet.`);
+  }
+  if (counts.length) lines.push(`Other elements: ${counts.join(", ")}.`);
+  return lines.join("\n");
+}
+
+const MODIFY_DIRECTIVE = `MODIFY MODE — read this BEFORE choosing tools.
+
+You are editing an EXISTING plan. The user wants an incremental change, not a fresh draft.
+
+HARD RULES (override anything else in this prompt):
+1. Do NOT call set_lot. It is disabled and will return an error.
+2. Do NOT re-place existing buildings. They are listed below — leave them exactly as-is.
+3. The "REQUIRED ORDER" and "RECOVERY FROM A BAD LAYOUT" sections above DO NOT apply. There is no restart-with-set_lot path. If a setback violation occurs, pick different coordinates inside the buildable envelope on the next call — do NOT keep retrying the same coordinates, and do NOT try to wipe.
+4. Call ONLY the tool(s) the user explicitly asked for. If the user said "add trees", call place_trees + finalize and stop. Most modify requests do NOT add a new building — only call place_building if the user clearly asked for a new building/house/structure.
+5. Be efficient: aim for 1–3 tool calls total, then finalize. Do not call check_setbacks unless you placed a new building.
+
+CURRENT STATE:
+{state}
+
+Now apply the user's requested change.`;
+
 
 const SYSTEM_PROMPT = `You are Parcel, a site-planning agent. You translate plain-English site descriptions into 3D site plans by calling tools that lay out the lot, place buildings, validate setbacks, and — when the user asks for them — add parking, trees, walkways, fences, and street furniture. Anything the user mentions that isn't covered by a tool is silently ignored.
 
@@ -58,7 +123,7 @@ REQUIRED ORDER:
 2. place_building — call ONCE PER BUILDING. Buildings must not overlap each other. You MAY emit multiple place_building calls in a single turn for bulk layouts (e.g. 4 houses at once).
 3. check_setbacks — verify all buildings; if any fail, re-call place_building with corrected coordinates.
 4. place_parking — ONLY if the user explicitly mentions parking, stalls, spots, or spaces. SKIP this entirely otherwise.
-5. LANDSCAPE / SITEWORK (place_trees, place_walkway, place_fence, place_street_furniture, place_bushes) — call only what the user asked for. Each of these may be called multiple times in any order. place_fence is additive (later calls override earlier on overlapping sides). Bushes are ground-level shrubs distinct from trees — call place_bushes for "shrubs", "hedges around the building", "foundation planting", or "boxwoods", and use placement="around_buildings" by default. The 'count' in place_bushes is the TOTAL across all targets and is split fairly: budget ~6-10 PER BUILDING for "around_buildings" (so 4 houses → count≈32, 2 houses → count≈16). Under-budgeting leaves some buildings without bushes — over-budget by ~20% to account for walkway/tree avoidance rejections.
+5. LANDSCAPE / SITEWORK (place_trees, place_walkway, place_fence, place_street_furniture, place_bushes) — trees are AUTO-ADDED by default (see DEFAULT LANDSCAPING below); the others only when the user explicitly asks. Each may be called multiple times in any order. place_fence is additive (later calls override earlier on overlapping sides). Bushes are ground-level shrubs distinct from trees — call place_bushes for "shrubs", "hedges around the building", "foundation planting", or "boxwoods", and use placement="around_buildings" by default. The 'count' in place_bushes is the TOTAL across all targets and is split fairly: budget ~6-10 PER BUILDING for "around_buildings" (so 4 houses → count≈32, 2 houses → count≈16). Under-budgeting leaves some buildings without bushes — over-budget by ~20% to account for walkway/tree avoidance rejections.
 6. finalize — when the plan is valid and complete.
 
 PLAN FIRST, ACT SECOND:
@@ -123,20 +188,49 @@ MATERIALS — always pass 'material' to place_building:
 - glass — office towers, "glass building", flagship retail, anything emphasizing transparency.
 If the user names a material, use exactly that. Otherwise infer from program type. Never omit material unless the program is genuinely ambiguous.
 
-STRUCTURE_TYPE — pass when the user asks for a non-standard structure. The renderer changes shape entirely for these:
-- parking_garage — multi-level parking decks. Renders as open concrete slabs on columns, NO WALLS. Pair with material='concrete'. Stories ≥ 2 typical, footprint 60-150ft x 100-200ft.
+STRUCTURE_TYPE — controls the EXTERIOR look. Each value has its own renderer with distinguishing features. ALWAYS set this when the building has an obvious type, even if the user didn't say it literally — it's the difference between a building that reads as a warehouse vs an office:
+- parking_garage — MULTI-LEVEL public parking decks. Open concrete slabs on columns, NO WALLS. Pair with material='concrete'. Stories ≥ 2 typical, footprint 60-150ft x 100-200ft. DO NOT use this for a residential car garage attached to a house — that's structure_type='garage'.
+- garage — small RESIDENTIAL garage (1-2 cars, attached or detached). Flat-roofed wood/stucco box with a big roll-up overhead door on the front face. Pair with material='wood' or 'stucco'. Always 1 story. Sizes: single-car ~12×22ft, two-car ~22×22ft. When the user asks for "a house with a garage", emit TWO place_building calls: the house, then a separate structure_type='garage' placed adjacent.
 - greenhouse — nurseries, garden conservatories, botanical structures. Translucent glass walls + frame ribs + gable roof. Pair with material='glass'. Usually 1 story, 20-60ft x 30-80ft.
 - pavilion — picnic shelters, gazebos, open-air structures. Roof on columns, no walls. Pair with material='wood'. Always 1 story (the renderer forces it). 15-30ft square typical.
-- house, apartment, office, warehouse — use the standard massing model. Default; you usually don't need to set it.
+- warehouse — industrial storage / distribution. Tilt-up concrete panels, ROLL-UP LOADING DOCK DOORS on the back face, clerestory window strip near roof, flat metal roof. Use for any storage, distribution, fulfillment, light-industrial brief. Pair with material='concrete' or 'steel'. Usually 1 story (sometimes 2). Big footprint, e.g. 80-200ft x 120-300ft.
+- house — single-family residential. Standard massing PLUS gable roof (when ≤2 stories), front porch with posts and overhang, chimney. Use for any house / cabin / cottage / single-family home. Pair with material='wood' or 'stucco'. 1-2 stories, 25-60ft footprint.
+- apartment — multi-unit residential. Standard massing PLUS lobby canopy at the front entrance and balconies on every upper story. Use for apartments, condos, townhouse stacks. Pair with material='brick' or 'stucco'. 3-6 stories typical.
+- office — flat-roofed commercial / institutional massing with regular punched windows. The DEFAULT for anything that doesn't match another type. Use for offices, schools (set program='elementary school' etc.), libraries, civic buildings, retail. Pair with material='glass', 'steel', 'brick', or 'concrete'.
 
 Examples:
 - "parking deck for 60 cars" → place_building(..., stories=3, material="concrete", structure_type="parking_garage")
 - "wooden gazebo in the back yard" → place_building(..., w=20, d=20, stories=1, material="wood", structure_type="pavilion")
 - "glass greenhouse, 30x60" → place_building(..., w=30, d=60, stories=1, material="glass", structure_type="greenhouse")
 
-LANDSCAPE / SITEWORK (we DO model these — call the tools when the user asks):
-- Trees, oaks, palms, pines, maples, "row of trees", landscaping with shade trees → place_trees(count, placement, species).
-  Pick species by climate cue: Mediterranean/California → palm, alpine/Pacific NW → pine, deciduous shade → maple, generic → oak.
+PROGRAM — pass on EVERY place_building call when the user named a building type. This drives the INTERIOR (rooms + furniture) and is orthogonal to structure_type. structure_type controls the EXTERIOR massing (gable house vs flat office vs open garage); program controls what the inside looks like.
+- Set program verbatim from the brief: "school" → program="elementary school" or "high school" (use age cue if present); "fire station" → program="fire station"; "library" → program="public library"; "restaurant" / "cafe" / "diner" → program="restaurant" or "corner cafe"; "hospital" / "clinic" → program="hospital" or "clinic"; "church" / "chapel" → program="church"; "gym" / "fitness center" → program="gym"; "retail" / "store" / "shop" → program="retail store"; "single-family home" / "house" → program="single-family house"; "apartments" / "condos" → program="apartment building"; "office" → program="office".
+- Never invent a generic program (e.g. don't say "building" or "structure"); if the brief is genuinely vague, OMIT program rather than guessing.
+- Use the closest structure_type for massing even if it's a loose fit — e.g. a school typically uses structure_type='office' (flat-roof institutional massing) with program='elementary school'; a fire station uses structure_type='warehouse' with program='fire station'.
+
+Program examples:
+- "elementary school, 80x120, 2 stories" → place_building(..., w=80, d=120, stories=2, material="brick", structure_type="office", program="elementary school")
+- "small fire station with two bays" → place_building(..., material="brick", structure_type="warehouse", program="fire station")
+- "neighborhood library, 50x70" → place_building(..., w=50, d=70, stories=1, material="brick", structure_type="office", program="public library")
+- "corner cafe" → place_building(..., material="brick", structure_type="office", program="corner cafe")
+- "single-family house" → place_building(..., material="wood", structure_type="house", program="single-family house")
+
+DEFAULT LANDSCAPING (AUTO-ADD — call without being asked):
+For residential, civic, mixed-use, school, library, restaurant, office, mid-rise, suburban, or single-family plans, ALWAYS call place_trees as the last setup step before finalize, even when the user did NOT mention trees. Bare lots read as parking pads, not designed sites. Sensible defaults:
+- Single building, lot ≤ 0.5 ac (~150x150) → place_trees(count=6, placement="perimeter", species="oak")
+- Single building, lot 0.5–1.5 ac → place_trees(count=10, placement="perimeter", species="oak")
+- 2–4 buildings → place_trees(count=12, placement="perimeter", species="oak")
+- 5+ buildings, large lot → place_trees(count=16, placement="perimeter", species="oak") and (optional) a second call place_trees(count=6, placement="scattered", species="maple")
+- Climate cue overrides species: Mediterranean/California/beach/LA → species="palm"; alpine/Pacific NW/cabin → species="pine"; "shade" or generic deciduous → species="maple"; otherwise default "oak".
+
+SKIP the auto-trees call (do NOT add trees) when:
+- The user explicitly said "no trees", "no greenery", "bare lot", "asphalt only", "concrete jungle".
+- The plan is dense urban infill at 0 setbacks (no room).
+- The plan is purely industrial: warehouses, distribution centers, parking-garage-only sites, fulfillment yards.
+- This is a MODIFY-mode call (existing plan being edited) — never inject default trees on a modify; only place trees if the user explicitly asked.
+
+LANDSCAPE / SITEWORK — TREES ARE DEFAULT-ON (rules above). The other landscape tools below are ON-DEMAND ONLY:
+- Trees, oaks, palms, pines, maples, "row of trees", landscaping with shade trees → place_trees(count, placement, species). When the user explicitly mentions trees, follow their direction (overrides defaults above).
   Pick placement by description: "along the front" → 'front', "around the property" → 'perimeter', "in the back yard" → 'back', "scattered" → 'scattered'.
   Reasonable counts: 4-8 for a single edge, 10-20 for full perimeter, 6-12 for scattered.
 - Walkways, paths, sidewalks, driveways, flagstone trails → place_walkway(x1,z1,x2,z2,material).
@@ -153,9 +247,13 @@ LANDSCAPE / SITEWORK (we DO model these — call the tools when the user asks):
   Singletons (only one slot exists): mailbox, bus_stop. Calling a second time will fail.
   Multi-slot (per-building or evenly spaced): trash_can, dumpster, planter (per building); bench (across the front sidewalk); fire_hydrant (left + right of front setback); stop_sign (front corners).
   ONLY call when the user explicitly mentions the item.
+- Pools, swimming pools, lap pools, plunge pools, spas → place_pool(x, z, w, d, shape).
+  Endpoints in lot coords. Place pools in the back yard (between the building and the back setback) or on a side strip — NEVER overlap a building.
+  Default shape is 'rectangle'; use 'round' if the user said circular/round, 'kidney' for curved/freeform residential.
+  Reasonable sizes: residential rectangle 14×28ft, lap pool 10×50ft, round 16ft diameter, kidney 16×26ft.
 
 WHAT TO IGNORE (we still don't model these — skip silently, do NOT invent tools for them):
-- Pools, gardens, lawn, fountains.
+- Gardens, lawn, fountains.
 - Color, paint, style adjectives beyond the material/species options listed.
 - Interior layout, decorative architectural details, porches, balconies, awnings.
 - Utilities, HVAC, lighting bollards, exterior fixtures other than the street furniture list above.
@@ -260,11 +358,20 @@ export async function POST(req: Request) {
   let prompt: string;
   let history: HistoryItem[] = [];
   let threadId: string | null = null;
+  let basePlan: SitePlan | null = null;
   try {
     const body = await req.json();
     prompt = typeof body?.prompt === "string" ? body.prompt : "";
     if (typeof body?.threadId === "string" && body.threadId) {
       threadId = body.threadId;
+    }
+    if (
+      body?.basePlan &&
+      typeof body.basePlan === "object" &&
+      body.basePlan.lot &&
+      body.basePlan.setbacks
+    ) {
+      basePlan = body.basePlan as SitePlan;
     }
     if (Array.isArray(body?.history)) {
       history = (body.history as unknown[])
@@ -291,9 +398,13 @@ export async function POST(req: Request) {
   // Both are best-effort — the prompt still works fine without them.
   const recentHistory = buildMemoryFromHistory(history);
   const preferences = await getPreferences(threadId).catch(() => "");
+  const modifyDirective = basePlan
+    ? MODIFY_DIRECTIVE.replace("{state}", describeModifyState(basePlan))
+    : "";
   const memoryParts = [
     recentHistory,
     preferences ? `User design preferences (from past sessions):\n${preferences}` : "",
+    modifyDirective,
   ].filter(Boolean);
   const systemInstruction = memoryParts.length
     ? `${SYSTEM_PROMPT}\n\n${memoryParts.join("\n\n")}`
@@ -302,18 +413,32 @@ export async function POST(req: Request) {
   // Conversation history. Gemini multi-turn function calling requires us to
   // append both the model's function-call turn and our function-response turn
   // each round, so the model sees the running history of what it tried.
-  const contents: Content[] = [{ role: "user", parts: [{ text: prompt }] }];
+  // For modify mode, also re-state the directive INSIDE the user message — the
+  // model attends most heavily to the user turn, so this is the most reliable
+  // place to keep it from defaulting to "add a building".
+  const userTurn = basePlan
+    ? `MODIFY (do not redraft, do not call set_lot). Apply this change to the existing plan: ${prompt}`
+    : prompt;
+  const contents: Content[] = [{ role: "user", parts: [{ text: userTurn }] }];
 
-  let plan: SitePlan | null = null;
+  // Restrict which tools the model can call in modify mode. Removing set_lot
+  // from allowedFunctionNames means the model cannot even attempt the
+  // wipe-everything path, regardless of what the prompt suggests.
+  const allowedToolNames = basePlan
+    ? ALLOWED_TOOL_NAMES.filter((n) => n !== "set_lot")
+    : ALLOWED_TOOL_NAMES;
+  const iterationCap = basePlan ? MAX_MODIFY_ITERATIONS : MAX_ITERATIONS;
+
+  let plan: SitePlan | null = basePlan;
   const steps: Step[] = [];
   const stages: Array<{ step: Step; plan: SitePlan | null }> = [];
   let finalized = false;
   let iterations = 0;
 
   try {
-    for (iterations = 0; iterations < MAX_ITERATIONS; iterations++) {
+    for (iterations = 0; iterations < iterationCap; iterations++) {
       const response = await ai.models.generateContent({
-        model: "gemini-3-flash-preview",
+        model: "gemini-3.1-flash-lite",
         contents,
         config: {
           systemInstruction,
@@ -321,7 +446,7 @@ export async function POST(req: Request) {
           toolConfig: {
             functionCallingConfig: {
               mode: FunctionCallingConfigMode.ANY,
-              allowedFunctionNames: ALLOWED_TOOL_NAMES,
+              allowedFunctionNames: allowedToolNames,
             },
           },
           thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
@@ -349,6 +474,12 @@ export async function POST(req: Request) {
         let ok: boolean;
         if (!fn) {
           result = `Unknown tool: "${name}". Available: ${ALLOWED_TOOL_NAMES.join(", ")}.`;
+          ok = false;
+        } else if (basePlan && name === "set_lot") {
+          // Defensive: even with the modify-mode addendum, refuse set_lot so
+          // the model can never erase the user's existing layout.
+          result =
+            "set_lot is disabled in modify mode — the lot and existing buildings must be preserved. Only call tools that add new elements.";
           ok = false;
         } else {
           const out = fn(plan, args);
@@ -386,8 +517,8 @@ export async function POST(req: Request) {
       const synthStep: Step = {
         tool: "finalize",
         note:
-          iterations >= MAX_ITERATIONS
-            ? `Plan validated. (Auto-finalized after ${MAX_ITERATIONS}-iteration cap.)`
+          iterations >= iterationCap
+            ? `Plan validated. (Auto-finalized after ${iterationCap}-iteration cap.)`
             : "Plan validated. (Auto-finalized — agent stopped emitting calls.)",
         ok: true,
       };

@@ -5,7 +5,9 @@ import { useSearchParams } from "next/navigation";
 import { motion } from "framer-motion";
 import { useStore } from "@/lib/store";
 import SideRail from "@/components/plan/SideRail";
+import SceneTools from "@/components/plan/SceneTools";
 import DebugToggle from "@/components/plan/DebugToggle";
+import TransparencyPill from "@/components/plan/TransparencyPill";
 
 const Scene = dynamic(() => import("@/components/Scene"), { ssr: false });
 const AccentGrainient = dynamic(
@@ -36,13 +38,21 @@ function PlanInner() {
   const fetchInteriorFor = useStore((s) => s.fetchInteriorFor);
   const prefetchAllInteriors = useStore((s) => s.prefetchAllInteriors);
   const selectFloor = useStore((s) => s.selectFloor);
+  const voiceModifyOpen = useStore((s) => s.voiceModifyOpen);
+  const setVoiceModifyOpen = useStore((s) => s.setVoiceModifyOpen);
 
+  // Run when navigating in with `?prompt=` and no plan has been drafted in
+  // this session. We deliberately don't require `promptParam !== prompt` —
+  // re-running the SAME prompt (e.g. picking it from past plans after a prior
+  // run that left store.prompt set) should still kick off a fresh draft.
+  // `steps.length === 0` is what distinguishes "fresh entry" from "already
+  // viewing this plan".
   useEffect(() => {
     if (isVoiceMode) return;
-    if (promptParam && promptParam !== prompt && !running && steps.length === 0) {
+    if (promptParam && !running && steps.length === 0) {
       runFromPrompt(promptParam);
     }
-  }, [promptParam, prompt, running, steps.length, runFromPrompt, isVoiceMode]);
+  }, [promptParam, running, steps.length, runFromPrompt, isVoiceMode]);
 
   // The moment the plan stops streaming, kick off interior generation for
   // every unique (footprint × story) so the user gets an instant 3D reveal
@@ -83,8 +93,16 @@ function PlanInner() {
         <DebugToggle />
         {modeParam === "interview" && <InterviewFlow />}
         {modeParam === "freestyle" && <FreestyleFlow />}
+        {voiceModifyOpen && (
+          <FreestyleFlow
+            mode="modify"
+            onClose={() => setVoiceModifyOpen(false)}
+          />
+        )}
       </motion.main>
       <SideRail />
+      <SceneTools />
+      <TransparencyPill />
     </div>
   );
 }

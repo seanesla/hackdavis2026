@@ -56,6 +56,12 @@ const PROGRAM_BY_TYPE: Record<string, { ground: string; upper: string }> = {
     ground: "No interior rooms or furniture — return empty arrays.",
     upper: "No interior rooms or furniture — return empty arrays.",
   },
+  garage: {
+    ground:
+      "Single open garage room covering most of the floor, with a small workbench / storage strip along one wall. Use one or two 9×18 ft car stall outlines on the floor. Furnishing should be minimal — a workbench (use 'desk') and a few shelves/cabinets ('filing_cabinet' or 'wardrobe').",
+    upper:
+      "Garages are single-story — return the same as ground.",
+  },
   greenhouse: {
     ground:
       "One open growing room covering the whole floor, plus a small headhouse / potting room at one end.",
@@ -74,11 +80,12 @@ function buildPrompt(args: {
   storyIndex: number;
   type: string;
   material: string;
+  program?: string;
 }): string {
-  const { w, d, totalStories, storyIndex, type, material } = args;
+  const { w, d, totalStories, storyIndex, type, material, program: userProgram } = args;
   const isGround = storyIndex === 0;
-  const program = PROGRAM_BY_TYPE[type] ?? PROGRAM_BY_TYPE.office;
-  const programBlurb = isGround ? program.ground : program.upper;
+  const fallback = PROGRAM_BY_TYPE[type] ?? PROGRAM_BY_TYPE.office;
+  const fallbackBlurb = isGround ? fallback.ground : fallback.upper;
   const floorLabel = isGround
     ? `Ground Floor (Level 1 of ${totalStories})`
     : storyIndex === totalStories - 1 && totalStories > 1
@@ -91,10 +98,20 @@ function buildPrompt(args: {
     return `- ${k} (${s.w}×${s.d}×${s.h} ft): ${s.hint}`;
   }).join("\n");
 
+  // When the planner gave an explicit program ("elementary school", "fire
+  // station", "single-family house", etc.), make THAT the primary signal —
+  // the structure_type is just a massing hint at this point. Otherwise fall
+  // back to the structure_type's canned program blurb.
+  const programLine = userProgram
+    ? `BUILDING USE (drives rooms + furniture): this is a ${userProgram}. Design rooms and furniture that a real ${userProgram} would have. ${
+        isGround ? "Ground floor: " : "Upper floor: "
+      }lay out the rooms a working ${userProgram} actually has on this level (entrance/lobby/reception spaces, primary program rooms, restrooms, support / back-of-house). Use the furniture catalog creatively — e.g. a school classroom = rows of desks + office_chairs + a teacher desk; a library = rows of bookshelves + desks + chairs; a restaurant = dining_tables + dining_chairs in the front-of-house and kitchen_counter/stove/fridge/sink in the back. NAME ROOMS by their real-world function (e.g. "classroom_1", "gym", "cafeteria", "nurse_office", "fire_apparatus_bay", "exam_room", "kitchen", "dining_room", "altar", "retail_floor"). DO NOT default to generic office workstations unless the program is genuinely an office.`
+    : `PROGRAM FOR THIS FLOOR: ${fallbackBlurb}`;
+
   return [
     `You are an architect-interior designer for a 3D site-planning app. Design ONE floor of a building: lay out rooms, then furnish them.`,
-    `BUILDING: ${type} (${material} construction). Footprint ${w}×${d} ft. This is ${floorLabel}.`,
-    `PROGRAM FOR THIS FLOOR: ${programBlurb}`,
+    `BUILDING: ${type}${userProgram ? ` (used as: ${userProgram})` : ""} (${material} construction). Footprint ${w}×${d} ft. This is ${floorLabel}.`,
+    programLine,
     `COORDINATE SYSTEM (critical):
 - Origin (0, 0) is the FRONT-LEFT corner of the building footprint.
 - +x runs left-to-right along the ${w}ft width.
@@ -192,6 +209,7 @@ export async function POST(req: Request) {
   const d = Math.round(building.d);
   const type = building.structure_type ?? "office";
   const material = building.material ?? "concrete";
+  const program = building.program;
   const key = interiorCacheKey({
     w,
     d,
@@ -199,6 +217,7 @@ export async function POST(req: Request) {
     storyIndex,
     structureType: type,
     material,
+    program,
   });
 
   if (!forceRegenerate) {
@@ -220,13 +239,14 @@ export async function POST(req: Request) {
     storyIndex,
     type,
     material,
+    program,
   });
 
   const ai = new GoogleGenAI({ apiKey });
 
   try {
     const response = await ai.models.generateContent({
-      model: "gemini-3-flash-preview",
+      model: "gemini-3.1-flash-lite",
       contents: [{ role: "user", parts: [{ text: prompt }] }],
       config: {
         responseMimeType: "application/json",

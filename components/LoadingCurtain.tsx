@@ -7,11 +7,17 @@ export default function LoadingCurtain() {
   const loading = useStore((s) => s.loading);
   const running = useStore((s) => s.running);
   const plan = useStore((s) => s.plan);
+  const error = useStore((s) => s.error);
   const pathname = usePathname();
   const onPlan = pathname?.startsWith("/plan") ?? false;
   // On /plan, hide once the first stage lands and buildings start animating —
   // the centered overlay would otherwise cover the construction.
   const active = onPlan ? (loading || running) && plan === null : loading;
+  // Surface a setup error prominently when there's no plan to fall back on.
+  // The most common culprit is a missing GEMINI_API_KEY in .env.local — without
+  // this, the curtain used to dismiss silently and leave the user staring at
+  // an empty canvas wondering what went wrong.
+  const showErrorBanner = error && !plan && !active;
 
   return (
     <AnimatePresence>
@@ -25,7 +31,12 @@ export default function LoadingCurtain() {
           transition={{ duration: 0.5 }}
         >
           <motion.div
-            className="absolute left-1/2 top-[calc(50%+140px)] -translate-x-1/2 font-mono text-[11px] uppercase tracking-[0.3em] text-mute"
+            // Centered at the full viewport so it sits directly under the
+            // floating hammer (which also centers at vw/2). The SideRail is
+            // a glass overlay on the renderer, so viewport-centered reads
+            // as "centered in the scene" without snapping right whenever
+            // /plan is the active route.
+            className="absolute left-1/2 -translate-x-1/2 top-[calc(50%+100px)] font-mono text-[11px] uppercase tracking-[0.3em] text-mute"
             animate={{ opacity: [0.4, 1, 0.4] }}
             transition={{
               duration: 1.6,
@@ -36,6 +47,42 @@ export default function LoadingCurtain() {
           >
             planning…
           </motion.div>
+        </motion.div>
+      )}
+
+      {showErrorBanner && (
+        <motion.div
+          key="error-banner"
+          role="alert"
+          aria-live="assertive"
+          className="fixed top-4 left-1/2 -translate-x-1/2 z-[90] max-w-[560px] w-[calc(100%-2rem)] glass rounded-xl px-5 py-4 border border-rose-500/40"
+          initial={{ opacity: 0, y: -12 }}
+          animate={{ opacity: 1, y: 0 }}
+          exit={{ opacity: 0, y: -12 }}
+          transition={{ duration: 0.3 }}
+        >
+          <div className="flex items-start gap-3">
+            <span
+              className="mt-0.5 inline-block w-2 h-2 rounded-full bg-rose-400 shrink-0"
+              aria-hidden
+            />
+            <div className="flex-1 min-w-0">
+              <div className="font-mono text-[10px] uppercase tracking-[0.2em] text-rose-300">
+                couldn&apos;t draft this plan
+              </div>
+              <div className="mt-1 font-mono text-[12px] text-paper/85 leading-relaxed break-words">
+                {error}
+              </div>
+              {/GEMINI_API_KEY/i.test(error ?? "") && (
+                <div className="mt-2 font-mono text-[11px] text-mute/80 leading-relaxed">
+                  Add your key to{" "}
+                  <code className="text-accent">.env.local</code> as{" "}
+                  <code className="text-accent">GEMINI_API_KEY=…</code>, then
+                  restart the dev server.
+                </div>
+              )}
+            </div>
+          </div>
         </motion.div>
       )}
     </AnimatePresence>

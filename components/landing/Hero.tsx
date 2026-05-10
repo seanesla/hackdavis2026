@@ -44,7 +44,7 @@ export default function Hero() {
         animate={{ opacity: 1 }}
         transition={{ delay: 1.1, duration: 0.5 }}
       >
-        for the people who can&apos;t afford autodesk.
+        for nonprofits, community developers, and small teams. no CAD required.
       </motion.p>
     </div>
   );

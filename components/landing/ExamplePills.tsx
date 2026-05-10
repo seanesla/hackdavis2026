@@ -26,7 +26,7 @@ export default function ExamplePills({ onPick }: Props) {
           <button
             key={i}
             onClick={() => onPick(ex)}
-            className="group relative font-mono text-xs sm:text-[13px] text-mute hover:text-paper px-3 py-2 rounded border border-rule/60 hover:border-accent/40 transition-colors"
+            className="group relative font-mono text-xs sm:text-[13px] text-mute hover:text-paper px-3 py-2 rounded border border-rule/60 hover:border-accent/40 transition-colors cursor-pointer"
           >
             {ex.length > 60 ? ex.slice(0, 58) + "…" : ex}
             <span className="absolute left-3 right-3 -bottom-px h-[1px] bg-accent scale-x-0 group-hover:scale-x-100 origin-left transition-transform duration-300" />

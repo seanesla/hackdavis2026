@@ -43,7 +43,7 @@ export default function ImportPlanButton() {
       <button
         type="button"
         onClick={() => inputRef.current?.click()}
-        className="font-mono text-[10px] uppercase tracking-[0.2em] text-mute hover:text-accent transition-colors px-3 py-1.5 rounded border border-rule/60 hover:border-accent bg-ink/30 backdrop-blur-md"
+        className="font-mono text-[10px] uppercase tracking-[0.2em] text-mute hover:text-accent transition-colors px-3 py-1.5 rounded border border-rule/60 hover:border-accent bg-ink/30 backdrop-blur-md cursor-pointer"
       >
         import plan ↑
       </button>
