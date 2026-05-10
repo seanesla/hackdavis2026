@@ -8,9 +8,11 @@ type State = {
   plan: SitePlan | null;
   steps: Step[];
   running: boolean;
+  loading: boolean;
   error: string | null;
   prompt: string;
   setPrompt: (s: string) => void;
+  setLoading: (b: boolean) => void;
   runFromPrompt: (p: string) => Promise<void>;
   reset: () => void;
 };
@@ -26,14 +28,22 @@ export const useStore = create<State>((set, get) => {
     plan: null,
     steps: [],
     running: false,
+    loading: false,
     error: null,
     prompt: "",
 
     setPrompt: (s) => set({ prompt: s }),
+    setLoading: (b) => set({ loading: b }),
 
     reset: () => {
       runId++;
-      set({ plan: null, steps: [], running: false, error: null });
+      set({
+        plan: null,
+        steps: [],
+        running: false,
+        loading: false,
+        error: null,
+      });
     },
 
     runFromPrompt: async (p) => {
@@ -67,6 +77,7 @@ export const useStore = create<State>((set, get) => {
         if (myRunId !== runId) return;
         set({
           running: false,
+          loading: false,
           error: err instanceof Error ? err.message : "Network error",
         });
         return;
@@ -80,6 +91,7 @@ export const useStore = create<State>((set, get) => {
           : data.error ?? "Planning failed.";
         set({
           running: false,
+          loading: false,
           error: message,
           steps: [{ tool: "error", note: message, ok: false }],
         });
@@ -90,6 +102,7 @@ export const useStore = create<State>((set, get) => {
       if (stages.length === 0) {
         set({
           running: false,
+          loading: false,
           plan: data.plan ?? null,
           error: "Agent returned no steps.",
         });
@@ -105,7 +118,7 @@ export const useStore = create<State>((set, get) => {
             plan: stage.plan,
           }));
           if (i === stages.length - 1) {
-            set({ running: false });
+            set({ running: false, loading: false });
           }
         }, STEP_INTERVAL_MS * (i + 1));
       });

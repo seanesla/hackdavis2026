@@ -1,41 +1,18 @@
 "use client";
 import { motion } from "framer-motion";
 
-const word = "parcel".split("");
-
 export default function Hero() {
   return (
     <div className="flex flex-col items-center text-center">
-      <motion.h1
-        className="font-display font-extrabold text-paper leading-none select-none"
-        style={{
-          fontSize: "clamp(5rem, 18vw, 14rem)",
-          letterSpacing: "-0.05em",
-        }}
-        initial="hidden"
-        animate="show"
-        variants={{
-          hidden: {},
-          show: { transition: { staggerChildren: 0.04, delayChildren: 0.1 } },
-        }}
-      >
-        {word.map((c, i) => (
-          <motion.span
-            key={i}
-            className="inline-block"
-            variants={{
-              hidden: { y: "0.6em", opacity: 0 },
-              show: {
-                y: 0,
-                opacity: 1,
-                transition: { type: "spring", stiffness: 140, damping: 18 },
-              },
-            }}
-          >
-            {c}
-          </motion.span>
-        ))}
-      </motion.h1>
+      <motion.img
+        src="/parcel-logo.gif"
+        alt="parcel"
+        className="select-none w-[clamp(20rem,72vw,56rem)] h-auto"
+        initial={{ opacity: 0, y: 12 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.6, delay: 0.1 }}
+        draggable={false}
+      />
 
       <motion.div
         className="survey-line w-[clamp(10rem,30vw,22rem)] mt-2 origin-left"
