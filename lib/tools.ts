@@ -4,11 +4,14 @@
 
 import {
   BUILDING_MATERIALS,
+  BUSH_VARIETIES,
   FENCE_STYLES,
   STREET_PROPS,
   STRUCTURE_TYPES,
   TREE_SPECIES,
   WALKWAY_MATERIALS,
+  type Bush,
+  type BushVariety,
   type Fence,
   type FenceStyle,
   type SitePlan,
@@ -28,6 +31,7 @@ import {
   rectsOverlapAny,
   setbackClearances,
 } from "./geometry";
+import { findPlacementSlot, PROP_ZONE_DESCRIPTION } from "./placementZones";
 
 export type ToolResult = {
   plan: SitePlan | null;
@@ -368,12 +372,14 @@ export const place_trees: ToolFn = (plan, args) => {
     const pz0 = insetFor("front");
     const pz1 = plan.lot.depth - insetFor("back");
     const perim = 2 * (px1 - px0) + 2 * (pz1 - pz0);
-    const spacing = Math.max(canopyR * 2.2, 12, perim / Math.max(count * 1.5, 6));
-    let dist = 0;
-    while (dist < perim) {
-      const p = perimPoint(dist, px0, px1, pz0, pz1);
-      candidates.push(p);
-      dist += spacing;
+    // Oversample 3× so candidates rejected near buildings don't leave visible
+    // gaps in the placed ring. Final spacing of accepted picks ends up close
+    // to perim / count, which is what reads as "evenly spaced" to the eye.
+    // Floor at canopy*2.2 so canopies never overlap.
+    const targetSpacing = Math.max(canopyR * 2.2, 12, perim / Math.max(count, 6));
+    const candidateSpacing = Math.max(canopyR * 1.1, targetSpacing / 3);
+    for (let dist = 0; dist < perim; dist += candidateSpacing) {
+      candidates.push(perimPoint(dist, px0, px1, pz0, pz1));
     }
   } else if (placement === "scattered") {
     // Deterministic pseudo-random: golden-angle sampling inside the lot.
@@ -388,29 +394,31 @@ export const place_trees: ToolFn = (plan, args) => {
     }
   } else {
     // front / back / left / right — single line of trees, inset adjusted for
-    // any fence on that side.
+    // any fence on that side. Oversample 4× so rejection (buildings, parking,
+    // walkways) doesn't starve the count budget.
+    const samples = Math.max(count * 4, 12);
     if (placement === "front") {
       const z = insetFor("front");
-      for (let i = 0; i < count * 2; i++) {
-        const t = (i + 0.5) / (count * 2);
+      for (let i = 0; i < samples; i++) {
+        const t = (i + 0.5) / samples;
         candidates.push({ x: xMin + t * (xMax - xMin), z });
       }
     } else if (placement === "back") {
       const z = plan.lot.depth - insetFor("back");
-      for (let i = 0; i < count * 2; i++) {
-        const t = (i + 0.5) / (count * 2);
+      for (let i = 0; i < samples; i++) {
+        const t = (i + 0.5) / samples;
         candidates.push({ x: xMin + t * (xMax - xMin), z });
       }
     } else if (placement === "left") {
       const x = insetFor("left");
-      for (let i = 0; i < count * 2; i++) {
-        const t = (i + 0.5) / (count * 2);
+      for (let i = 0; i < samples; i++) {
+        const t = (i + 0.5) / samples;
         candidates.push({ x, z: zMin + t * (zMax - zMin) });
       }
     } else {
       const x = plan.lot.width - insetFor("right");
-      for (let i = 0; i < count * 2; i++) {
-        const t = (i + 0.5) / (count * 2);
+      for (let i = 0; i < samples; i++) {
+        const t = (i + 0.5) / samples;
         candidates.push({ x, z: zMin + t * (zMax - zMin) });
       }
     }
@@ -432,7 +440,32 @@ export const place_trees: ToolFn = (plan, args) => {
   const FENCE_BUFFER = 4; // hedge thickness ~3.5ft, plus a little air
 
   const placed: Tree[] = [];
-  const minSep = Math.max(canopyR * 1.5, 10);
+  // For perimeter / front / back / left / right (single-axis distribution),
+  // base minSep on the target spacing along that axis so we get an even ring.
+  // Without this, oversampled candidates would cluster — three trees crammed
+  // at one corner, gaps elsewhere.
+  let minSep = Math.max(canopyR * 1.5, 10);
+  if (placement === "perimeter") {
+    const px0 = insetFor("left");
+    const px1 = plan.lot.width - insetFor("right");
+    const pz0 = insetFor("front");
+    const pz1 = plan.lot.depth - insetFor("back");
+    const perim = 2 * (px1 - px0) + 2 * (pz1 - pz0);
+    // 0.85× the target stride — gives breathing room for the rejection-and-skip
+    // pattern to keep average spacing close to target.
+    minSep = Math.max(minSep, (perim / Math.max(count, 1)) * 0.85);
+  } else if (
+    placement === "front" ||
+    placement === "back" ||
+    placement === "left" ||
+    placement === "right"
+  ) {
+    const span =
+      placement === "front" || placement === "back"
+        ? xMax - xMin
+        : zMax - zMin;
+    minSep = Math.max(minSep, (span / Math.max(count, 1)) * 0.85);
+  }
 
   // Distance from a circle center to the nearest edge of a rect — negative
   // (penetration) if the center is inside.
@@ -729,33 +762,34 @@ export const place_fence: ToolFn = (plan, args) => {
 export const place_street_furniture: ToolFn = (plan, args) => {
   if (!plan) return fail(plan, "Lot not set. Call set_lot first.");
 
-  const x = num(args.x);
-  const z = num(args.z);
-  const yaw = num(args.yaw, 0);
   const rawKind =
     typeof args.kind === "string" ? args.kind.toLowerCase() : null;
-
   if (!rawKind || !(STREET_PROPS as readonly string[]).includes(rawKind)) {
     return fail(
       plan,
       `kind must be one of: ${STREET_PROPS.join(", ")} (got "${args.kind}").`
     );
   }
-  if (x === null || z === null) {
-    return fail(plan, "place_street_furniture requires numeric x, z.");
-  }
-  if (x < 0 || x > plan.lot.width || z < 0 || z > plan.lot.depth) {
+  const kind = rawKind as StreetPropKind;
+
+  // Placement is deterministic. The system picks the slot from the kind's
+  // designated zone (front sidewalk, building back wall, lot corner, etc.)
+  // and rejects requests when no valid slot exists. Any x/z/yaw the AI
+  // passed is IGNORED — by design, so a "bus_stop" never lands in a parking
+  // stall just because the AI guessed the wrong coordinates.
+  const slot = findPlacementSlot(plan, kind);
+  if (!slot) {
     return fail(
       plan,
-      `Position (${x}, ${z}) is outside lot ${plan.lot.width}×${plan.lot.depth}.`
+      `No available slot for ${kind} on this site. Its zone (${PROP_ZONE_DESCRIPTION[kind]}) is fully occupied or blocked by buildings/parking.`
     );
   }
 
   const prop: StreetProp = {
-    kind: rawKind as StreetPropKind,
-    x,
-    z,
-    ...(yaw ? { yaw: yaw! } : {}),
+    kind,
+    x: slot.x,
+    z: slot.z,
+    ...(slot.yaw ? { yaw: slot.yaw } : {}),
   };
   const next: SitePlan = {
     ...plan,
@@ -763,9 +797,248 @@ export const place_street_furniture: ToolFn = (plan, args) => {
   };
   return ok(
     next,
-    `Placed ${rawKind} at (${x}, ${z})${yaw ? ` rotated ${yaw}°` : ""}.`
+    `Placed ${kind} at (${slot.x}, ${slot.z}) — system-positioned to its zone (${PROP_ZONE_DESCRIPTION[kind]}).`
   );
 };
+
+// ----- place_bushes ---------------------------------------------------------
+//
+// Ground-level shrubs. Same auto-avoidance as place_trees (buildings, parking,
+// walkways, fenced sides) plus dodging existing trees so a bush doesn't end
+// up under an oak's canopy. Placement modes:
+//   "around_buildings": ring each building footprint at ~3-5ft offset.
+//   "front":             single line along the front of the lot.
+//   "scattered":         pseudo-random across the lot.
+
+const BUSH_DEFAULT_SIZE: Record<BushVariety, number> = {
+  boxwood: 3.5,
+  hedge_round: 4.5,
+  flowering: 3.0,
+};
+
+export const place_bushes: ToolFn = (plan, args) => {
+  if (!plan) return fail(plan, "Lot not set. Call set_lot first.");
+
+  const count = num(args.count);
+  if (count === null || count <= 0 || !Number.isInteger(count)) {
+    return fail(plan, `count must be a positive integer (got ${args.count}).`);
+  }
+
+  const placementRaw =
+    typeof args.placement === "string" ? args.placement.toLowerCase() : "around_buildings";
+  const allowed = ["around_buildings", "front", "scattered"] as const;
+  if (!(allowed as readonly string[]).includes(placementRaw)) {
+    return fail(
+      plan,
+      `Unknown placement "${args.placement}". Allowed: ${allowed.join(", ")}.`
+    );
+  }
+  const placement = placementRaw as (typeof allowed)[number];
+
+  const varietyRaw =
+    typeof args.variety === "string" ? args.variety.toLowerCase() : "boxwood";
+  if (!(BUSH_VARIETIES as readonly string[]).includes(varietyRaw)) {
+    return fail(
+      plan,
+      `Unknown bush variety "${args.variety}". Allowed: ${BUSH_VARIETIES.join(", ")}.`
+    );
+  }
+  const variety = varietyRaw as BushVariety;
+  const sizeArg = num(args.size);
+  const size = sizeArg !== null && sizeArg > 0 ? sizeArg : BUSH_DEFAULT_SIZE[variety];
+
+  const buildings = plan.buildings ?? [];
+  const stalls = plan.parking ?? [];
+  const walkways = plan.walkways ?? [];
+  const trees = plan.trees ?? [];
+  const fences = plan.fences ?? [];
+  const fencedSides = new Set<string>();
+  for (const f of fences) for (const s of f.sides) fencedSides.add(s);
+
+  const bushR = size / 2;
+  const bushClearance = 1.5;
+  const margin = 4;
+  const xMin = margin;
+  const xMax = plan.lot.width - margin;
+  const zMin = margin;
+  const zMax = plan.lot.depth - margin;
+
+  // Generate candidates per placement mode.
+  const candidates: { x: number; z: number }[] = [];
+  if (placement === "around_buildings") {
+    if (buildings.length === 0) {
+      return fail(
+        plan,
+        `No buildings to ring with bushes. Place buildings first or use placement="scattered".`
+      );
+    }
+    // Generate candidates AROUND EACH BUILDING, then ROUND-ROBIN them so the
+    // count budget is split fairly across all buildings. Without this, the
+    // first building's perimeter eats the whole budget and the rest get zero.
+    const offset = bushR + 2;
+    const stride = Math.max(size + 1.5, 5);
+    const perBuilding: { x: number; z: number }[][] = buildings.map((b) => {
+      const list: { x: number; z: number }[] = [];
+      const peri = 2 * (b.w + 2 * offset) + 2 * (b.d + 2 * offset);
+      // Phase the start angle by building position so neighbors don't all
+      // start at their front-left corner — looks more natural.
+      const phase = (Math.abs(b.x * 13 + b.z * 7) % stride);
+      for (let dist = phase; dist < peri; dist += stride) {
+        list.push(
+          perimPointRect(
+            dist,
+            b.x - offset,
+            b.x + b.w + offset,
+            b.z - offset,
+            b.z + b.d + offset
+          )
+        );
+      }
+      return list;
+    });
+    // Round-robin interleave: B1[0], B2[0], B3[0], ..., B1[1], B2[1], ...
+    const maxLen = perBuilding.reduce((m, l) => Math.max(m, l.length), 0);
+    for (let i = 0; i < maxLen; i++) {
+      for (const list of perBuilding) {
+        if (i < list.length) candidates.push(list[i]);
+      }
+    }
+  } else if (placement === "front") {
+    // Oversample so rejected candidates (walkways, fences, parking) don't
+    // starve the budget. count * 4 gives ~75% slack for typical lots.
+    const z = fencedSides.has("front") ? bushR + 5 : 4;
+    const samples = Math.max(count * 4, 8);
+    for (let i = 0; i < samples; i++) {
+      const t = (i + 0.5) / samples;
+      candidates.push({ x: xMin + t * (xMax - xMin), z });
+    }
+  } else {
+    // scattered — oversample heavily for the same reason.
+    const seedOffset = (plan.bushes?.length ?? 0) * 5.71;
+    const samples = Math.max(count * 10, 30);
+    for (let i = 0; i < samples; i++) {
+      const t = i + seedOffset;
+      const u = (Math.sin(t * 12.9898) * 43758.5453) % 1;
+      const v = (Math.sin(t * 78.233) * 12345.6789) % 1;
+      candidates.push({
+        x: xMin + ((u + 1) % 1) * (xMax - xMin),
+        z: zMin + ((v + 1) % 1) * (zMax - zMin),
+      });
+    }
+  }
+
+  const placed: Bush[] = [];
+  const minSep = Math.max(size * 1.1, 3);
+
+  const distToRect = (
+    cx: number,
+    cz: number,
+    rx: number,
+    rz: number,
+    rw: number,
+    rd: number
+  ): number => {
+    const dx = Math.max(rx - cx, 0, cx - (rx + rw));
+    const dz = Math.max(rz - cz, 0, cz - (rz + rd));
+    return Math.hypot(dx, dz);
+  };
+
+  for (const c of candidates) {
+    if (placed.length >= count) break;
+    if (c.x < xMin || c.x > xMax || c.z < zMin || c.z > zMax) continue;
+    let blocked = false;
+    // Inside or overlapping any building footprint.
+    for (const b of buildings) {
+      if (distToRect(c.x, c.z, b.x, b.z, b.w, b.d) < bushR + bushClearance) {
+        blocked = true;
+        break;
+      }
+    }
+    if (blocked) continue;
+    // Parking stalls.
+    for (const s of stalls) {
+      if (distToRect(c.x, c.z, s.x, s.z, STALL_W, STALL_D) < bushR + bushClearance) {
+        blocked = true;
+        break;
+      }
+    }
+    if (blocked) continue;
+    // Walkways.
+    for (const w of walkways) {
+      if (
+        distPointToSegment(c.x, c.z, w.x1, w.z1, w.x2, w.z2) <
+        bushR + w.width / 2 + 0.5
+      ) {
+        blocked = true;
+        break;
+      }
+    }
+    if (blocked) continue;
+    // Trees — bushes shouldn't sit under canopies.
+    for (const t of trees) {
+      const treeR = t.height * 0.4;
+      if (Math.hypot(c.x - t.x, c.z - t.z) < bushR + treeR + 1) {
+        blocked = true;
+        break;
+      }
+    }
+    if (blocked) continue;
+    // Fenced sides.
+    if (fencedSides.has("front") && c.z < bushR + 2) continue;
+    if (fencedSides.has("back") && c.z > plan.lot.depth - bushR - 2) continue;
+    if (fencedSides.has("left") && c.x < bushR + 2) continue;
+    if (fencedSides.has("right") && c.x > plan.lot.width - bushR - 2) continue;
+    // Don't crowd already-placed bushes.
+    const tooClose = placed.some(
+      (p) => Math.hypot(p.x - c.x, p.z - c.z) < minSep
+    );
+    if (tooClose) continue;
+
+    placed.push({ x: c.x, z: c.z, variety, size });
+  }
+
+  if (placed.length === 0) {
+    return fail(
+      plan,
+      `Could not place any bushes — lot too crowded by buildings, walkways, trees, or fenced sides.`
+    );
+  }
+
+  const next: SitePlan = {
+    ...plan,
+    bushes: [...(plan.bushes ?? []), ...placed],
+  };
+  if (placed.length < count) {
+    return ok(
+      next,
+      `Placed ${placed.length} of ${count} requested ${variety} bushes (${placement}). Could not fit ${count - placed.length} more given existing obstacles.`
+    );
+  }
+  return ok(
+    next,
+    `Placed ${placed.length} ${variety} bushes (${placement}), each ~${size}ft across.`
+  );
+};
+
+function perimPointRect(
+  dist: number,
+  xMin: number,
+  xMax: number,
+  zMin: number,
+  zMax: number
+): { x: number; z: number } {
+  const W = xMax - xMin;
+  const D = zMax - zMin;
+  const peri = 2 * W + 2 * D;
+  let d = ((dist % peri) + peri) % peri;
+  if (d < W) return { x: xMin + d, z: zMin };
+  d -= W;
+  if (d < D) return { x: xMax, z: zMin + d };
+  d -= D;
+  if (d < W) return { x: xMax - d, z: zMax };
+  d -= W;
+  return { x: xMin, z: zMax - d };
+}
 
 // ----- finalize -------------------------------------------------------------
 
@@ -800,6 +1073,7 @@ export const TOOLS: Record<string, ToolFn> = {
   place_walkway,
   place_fence,
   place_street_furniture,
+  place_bushes,
   finalize,
 };
 
