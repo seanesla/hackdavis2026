@@ -13,6 +13,7 @@ import {
   type Room,
   interiorCacheKey,
 } from "./furniture";
+import { getPlans, savePlan } from "./pastPlansDb";
 
 type Stage = { step: Step; plan: SitePlan | null };
 
@@ -202,10 +203,14 @@ export const useStore = create<State>((set, get) => {
     };
 
     try {
+      const history = (await getPlans()).map((s) => ({
+        prompt: s.prompt,
+        sitePlan: s.sitePlan,
+      }));
       const res = await fetch("/api/plan", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ prompt: p }),
+        body: JSON.stringify({ prompt: p, history }),
       });
       data = await res.json();
     } catch (err) {
@@ -242,6 +247,11 @@ export const useStore = create<State>((set, get) => {
         error: "Agent returned no steps.",
       });
       return;
+    }
+
+    const finalPlan = stages[stages.length - 1]?.plan ?? data.plan ?? null;
+    if (finalPlan) {
+      void savePlan(p, finalPlan);
     }
 
     // Replay stages with intervals so per-step drop animations land cleanly.

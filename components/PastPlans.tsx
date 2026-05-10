@@ -3,17 +3,7 @@ import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useStore } from "@/lib/store";
 import { downloadPlan } from "@/lib/exportPlan";
-import type { SitePlan } from "@/lib/types";
-
-const USER_ID = "hackathon-user-1";
-
-type StoredSession = {
-  id: string;
-  userId: string;
-  prompt: string;
-  sitePlan: SitePlan;
-  createdAt: string;
-};
+import { getPlans, type PastPlan } from "@/lib/pastPlansDb";
 
 type Props = {
   onLoad?: (prompt: string) => void;
@@ -24,7 +14,7 @@ export default function PastPlans({ onLoad }: Props = {}) {
   const loadImportedPlan = useStore((s) => s.loadImportedPlan);
   const router = useRouter();
   const handleLoadPrompt = onLoad ?? setPromptInStore;
-  const handleOpenSaved = (s: StoredSession) => {
+  const handleOpenSaved = (s: PastPlan) => {
     loadImportedPlan({
       plan: s.sitePlan,
       prompt: s.prompt,
@@ -32,14 +22,13 @@ export default function PastPlans({ onLoad }: Props = {}) {
     });
     router.push("/plan");
   };
-  const [history, setHistory] = useState<StoredSession[] | null>(null);
+  const [history, setHistory] = useState<PastPlan[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const refetch = useCallback(async (): Promise<void> => {
     try {
-      const r = await fetch(`/api/history?userId=${encodeURIComponent(USER_ID)}`);
-      const data = await r.json();
-      setHistory(data.history ?? []);
+      const plans = await getPlans();
+      setHistory(plans);
       setError(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load history");
