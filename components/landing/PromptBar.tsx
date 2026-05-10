@@ -1,7 +1,8 @@
 "use client";
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
 import { motion } from "framer-motion";
 import { useRouter } from "next/navigation";
+import PromptDropdown from "./PromptDropdown";
 
 type Props = {
   value: string;
@@ -11,8 +12,31 @@ type Props = {
 
 export default function PromptBar({ value, onValueChange, onSubmit }: Props) {
   const [focused, setFocused] = useState(false);
+  const [dropdownOpen, setDropdownOpen] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
+  const wrapperRef = useRef<HTMLDivElement>(null);
   const router = useRouter();
+
+  // Open the dropdown only when the user is "asking for help" — focused on
+  // an empty input. As soon as they type, get out of the way.
+  useEffect(() => {
+    if (focused && value === "") setDropdownOpen(true);
+    else if (value !== "") setDropdownOpen(false);
+  }, [focused, value]);
+
+  // Close on outside click so clicking inside the dropdown doesn't dismiss.
+  useEffect(() => {
+    if (!dropdownOpen) return;
+    const onMouseDown = (e: MouseEvent) => {
+      if (!wrapperRef.current) return;
+      if (!wrapperRef.current.contains(e.target as Node)) {
+        setDropdownOpen(false);
+        setFocused(false);
+      }
+    };
+    document.addEventListener("mousedown", onMouseDown);
+    return () => document.removeEventListener("mousedown", onMouseDown);
+  }, [dropdownOpen]);
 
   const handleSubmit = () => {
     if (!value.trim()) {
@@ -20,7 +44,6 @@ export default function PromptBar({ value, onValueChange, onSubmit }: Props) {
       return;
     }
     onSubmit();
-    // Navigation handled by parent (after wipe transition).
     setTimeout(() => {
       router.push(`/plan?prompt=${encodeURIComponent(value)}`);
     }, 650);
@@ -28,6 +51,7 @@ export default function PromptBar({ value, onValueChange, onSubmit }: Props) {
 
   return (
     <motion.div
+      ref={wrapperRef}
       initial={{ opacity: 0, y: 12 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ delay: 1.3, duration: 0.6 }}
@@ -59,6 +83,7 @@ export default function PromptBar({ value, onValueChange, onSubmit }: Props) {
           style={{ width: focused ? "100%" : "0%" }}
         />
       </div>
+      <PromptDropdown open={dropdownOpen} onLoadPrompt={onValueChange} />
     </motion.div>
   );
 }
