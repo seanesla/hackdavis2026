@@ -25,6 +25,13 @@ const COLORS = {
   stallStripe: "#52525b",
 };
 
+const MATERIAL_COLORS: Record<string, string> = {
+  concrete: "#9ca3af",
+  steel: "#3b82f6",
+  wood: "#92400e",
+  other: COLORS.building,
+};
+
 type Props = { siteplan?: SitePlan | null };
 
 export default function SitePlanMesh({ siteplan }: Props) {
@@ -71,6 +78,7 @@ export default function SitePlanMesh({ siteplan }: Props) {
           building={buildingShown}
           valid={buildingValid}
           accent={accent}
+          material={plan.meta?.material}
         />
       )}
 
@@ -203,10 +211,12 @@ function Building({
   building,
   valid,
   accent,
+  material,
 }: {
   building: NonNullable<SitePlan["building"]>;
   valid: boolean;
   accent: string;
+  material?: string;
 }) {
   const height = building.stories * STORY_HEIGHT_FT;
   const cx = building.x + building.w / 2;
@@ -214,15 +224,15 @@ function Building({
   const restY = Y.lotTop + height / 2;
   const ref = useDrop<THREE.Group>(restY, 50);
   const roofColor = valid ? accent : COLORS.buildingInvalid;
+  const bodyColor = valid
+    ? MATERIAL_COLORS[material ?? "other"] ?? COLORS.building
+    : COLORS.buildingInvalid;
 
   return (
     <group ref={ref} position={[cx, restY + 50, cz]}>
       <mesh castShadow receiveShadow>
         <boxGeometry args={[building.w, height, building.d]} />
-        <meshStandardMaterial
-          color={valid ? COLORS.building : COLORS.buildingInvalid}
-          roughness={0.6}
-        />
+        <meshStandardMaterial color={bodyColor} roughness={0.6} />
         <Edges color={COLORS.buildingEdge} lineWidth={1} />
       </mesh>
 
