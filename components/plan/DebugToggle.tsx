@@ -20,7 +20,7 @@ export default function DebugToggle() {
         "px-2.5 py-1.5 font-mono text-[10px] uppercase tracking-wider",
         "shadow-md backdrop-blur transition-colors",
         enabled
-          ? "bg-fuchsia-600/90 text-white border-fuchsia-300"
+          ? "bg-accent text-ink border-accent"
           : "bg-paper/85 text-ink hover:bg-paper",
       ].join(" ")}
     >

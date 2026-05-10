@@ -41,6 +41,13 @@ function PlanInner() {
   const voiceModifyOpen = useStore((s) => s.voiceModifyOpen);
   const setVoiceModifyOpen = useStore((s) => s.setVoiceModifyOpen);
 
+  // While either voice flow is in conversation (interview Q&A or freestyle
+  // chat), suppress the SideRail / SceneTools / TransparencyPill so the
+  // voice overlay gets a clean stage. As soon as the user says "build it"
+  // (running=true) or a plan starts streaming in, the chrome unhides so
+  // they can see progress + controls.
+  const voiceConversationActive = isVoiceMode && !running && !plan;
+
   // Run when navigating in with `?prompt=` and no plan has been drafted in
   // this session. We deliberately don't require `promptParam !== prompt` —
   // re-running the SAME prompt (e.g. picking it from past plans after a prior
@@ -100,9 +107,13 @@ function PlanInner() {
           />
         )}
       </motion.main>
-      <SideRail />
-      <SceneTools />
-      <TransparencyPill />
+      {!voiceConversationActive && (
+        <>
+          <SideRail />
+          <SceneTools />
+          <TransparencyPill />
+        </>
+      )}
     </div>
   );
 }
