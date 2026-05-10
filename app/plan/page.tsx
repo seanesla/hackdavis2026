@@ -8,8 +8,8 @@ import SideRail from "@/components/plan/SideRail";
 import DebugToggle from "@/components/plan/DebugToggle";
 
 const Scene = dynamic(() => import("@/components/Scene"), { ssr: false });
-const ContourBackground = dynamic(
-  () => import("@/components/bg/ContourBackground"),
+const AccentGrainient = dynamic(
+  () => import("@/components/bg/AccentGrainient"),
   { ssr: false }
 );
 
@@ -19,6 +19,7 @@ function PlanInner() {
   const runFromPrompt = useStore((s) => s.runFromPrompt);
   const prompt = useStore((s) => s.prompt);
   const running = useStore((s) => s.running);
+  const steps = useStore((s) => s.steps);
   const plan = useStore((s) => s.plan);
   const selectedFloor = useStore((s) => s.selectedFloor);
   const fetchInteriorFor = useStore((s) => s.fetchInteriorFor);
@@ -26,10 +27,10 @@ function PlanInner() {
   const selectFloor = useStore((s) => s.selectFloor);
 
   useEffect(() => {
-    if (promptParam && promptParam !== prompt && !running) {
+    if (promptParam && promptParam !== prompt && !running && steps.length === 0) {
       runFromPrompt(promptParam);
     }
-  }, [promptParam, prompt, running, runFromPrompt]);
+  }, [promptParam, prompt, running, steps.length, runFromPrompt]);
 
   // The moment the plan stops streaming, kick off interior generation for
   // every unique (footprint × story) so the user gets an instant 3D reveal
@@ -58,18 +59,18 @@ function PlanInner() {
   }, [selectedFloor, selectFloor]);
 
   return (
-    <div className="relative flex h-screen w-screen overflow-hidden">
-      <ContourBackground />
-      <SideRail />
+    <div className="relative h-screen w-screen overflow-hidden">
+      <AccentGrainient subtle />
       <motion.main
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         transition={{ duration: 0.7, delay: 0.2 }}
-        className="flex-1 relative"
+        className="absolute inset-0"
       >
         <Scene />
         <DebugToggle />
       </motion.main>
+      <SideRail />
     </div>
   );
 }

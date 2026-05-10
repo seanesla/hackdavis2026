@@ -3,7 +3,7 @@
 @theme {
   --color-ink: #0b0b0c;
   --color-paper: #f5f5f4;
-  --color-mute: #71717a;
+  --color-mute: #d4d4d8;
   --color-rule: #27272a;
   --color-accent: #e8b86d;
   --color-accent-soft: rgba(232, 184, 109, 0.12);
@@ -15,9 +15,12 @@
   --font-display: var(--font-bricolage);
 }
 
-html,
-body {
+html {
   background: var(--color-ink);
+  color: var(--color-paper);
+}
+body {
+  background: transparent;
   color: var(--color-paper);
 }
 
@@ -53,11 +56,11 @@ body {
 
 /* Glass panel */
 .glass {
-  background: rgba(255, 255, 255, 0.03);
-  backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
-  border-right: 1px solid var(--color-rule);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  background: #0e0e10;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow:
+    0 20px 60px -20px rgba(0, 0, 0, 0.7),
+    inset 0 1px 0 rgba(255, 255, 255, 0.05);
 }
 
 /* Drafting hairline — animated via inline style width */
