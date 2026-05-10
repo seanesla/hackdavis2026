@@ -6,6 +6,9 @@ import { motion } from "framer-motion";
 import { useStore } from "@/lib/store";
 import SideRail from "@/components/plan/SideRail";
 import DebugToggle from "@/components/plan/DebugToggle";
+import TopDownToggle from "@/components/plan/TopDownToggle";
+import SunSlider from "@/components/plan/SunSlider";
+import MetricsCard from "@/components/plan/MetricsCard";
 
 const Scene = dynamic(() => import("@/components/Scene"), { ssr: false });
 const AccentGrainient = dynamic(
@@ -69,6 +72,9 @@ function PlanInner() {
       >
         <Scene />
         <DebugToggle />
+        <TopDownToggle />
+        <SunSlider />
+        <MetricsCard />
       </motion.main>
       <SideRail />
     </div>

@@ -11,6 +11,7 @@ import * as THREE from "three";
 import SitePlanMesh from "./SitePlanMesh";
 import { useStore } from "@/lib/store";
 import { useAccent } from "@/lib/accent";
+import { useViewerStore } from "@/lib/viewerStore";
 import type { SitePlan } from "@/lib/types";
 
 type Props = { siteplan?: SitePlan | null };
@@ -19,6 +20,17 @@ export default function Scene({ siteplan }: Props) {
   const [interacted, setInteracted] = useState(false);
   const accent = useAccent((s) => s.accent.hex);
   const selectFloor = useStore((s) => s.selectFloor);
+  const sunTime = useViewerStore((s) => s.sunTime);
+  const topDown = useViewerStore((s) => s.topDown);
+
+  // Sun arc: morning (east) → noon (overhead) → evening (west). +z bias so
+  // shadows fall mostly toward the front (street) for a recognizable
+  // mid-day rendering at sunTime=0.5.
+  const sunPos = useMemo<[number, number, number]>(() => {
+    const theta = sunTime * Math.PI;
+    const r = 200;
+    return [r * Math.cos(theta), r * Math.sin(theta) + 30, 60];
+  }, [sunTime]);
 
   return (
     <Canvas
@@ -57,9 +69,9 @@ export default function Scene({ siteplan }: Props) {
       {/* Hemisphere — sky tint above, inky bounce below. Matches contour bg. */}
       <hemisphereLight args={["#e6dec8", "#0b0b0c", 0.55]} />
 
-      {/* Key light — warm, top-right, casts the architectural shadow. */}
+      {/* Key light — driven by the sun slider in viewerStore. */}
       <directionalLight
-        position={[90, 150, 70]}
+        position={sunPos}
         intensity={1.35}
         color="#fff4dc"
         castShadow
@@ -114,47 +126,70 @@ export default function Scene({ siteplan }: Props) {
         makeDefault
         minDistance={20}
         maxDistance={800}
-        maxPolarAngle={Math.PI / 2.05}
+        // When top-down is on, lock the polar angle to ~straight-down so the
+        // user can pan/zoom but can't tilt out of plan view.
+        minPolarAngle={topDown ? 0 : 0}
+        maxPolarAngle={topDown ? 0.05 : Math.PI / 2.05}
         target={[0, 0, 0]}
-        autoRotate={!interacted}
+        autoRotate={!interacted && !topDown}
         autoRotateSpeed={0.35}
         enableDamping
         dampingFactor={0.08}
       />
-      <CameraRig siteplan={siteplan} />
+      <CameraRig siteplan={siteplan} topDown={topDown} />
     </Canvas>
   );
 }
 
-function CameraRig({ siteplan }: { siteplan?: SitePlan | null }) {
+function CameraRig({
+  siteplan,
+  topDown,
+}: {
+  siteplan?: SitePlan | null;
+  topDown: boolean;
+}) {
   const storePlan = useStore((s) => s.plan);
   const plan = siteplan !== undefined ? siteplan : storePlan;
 
-  const camera = useThree((s) => s.camera);
+  const camera = useThree((s) => s.camera) as THREE.PerspectiveCamera;
   const controls = useThree((s) => s.controls) as
     | { target: THREE.Vector3; update: () => void }
     | null;
 
   const targetPos = useMemo(() => {
     if (!plan || plan.lot.width <= 0 || plan.lot.depth <= 0) {
-      return new THREE.Vector3(120, 110, 140);
+      return topDown
+        ? new THREE.Vector3(0, 220, 0.001)
+        : new THREE.Vector3(120, 110, 140);
     }
     const span = Math.max(plan.lot.width, plan.lot.depth, 40);
+    if (topDown) {
+      // Position high above the lot center; slight z offset prevents the
+      // OrbitControls "look-down" singularity.
+      return new THREE.Vector3(0, span * 1.6, 0.001);
+    }
     const d = span * 1.3;
     return new THREE.Vector3(d, d * 0.85, d);
-  }, [plan?.lot.width, plan?.lot.depth]);
+  }, [plan?.lot.width, plan?.lot.depth, topDown]);
 
-  const remaining = useRef(0);
+  // Tighter FOV in top-down mode → reads more like an orthographic plan view
+  // (less perspective foreshortening). Wider FOV in perspective for context.
+  const targetFov = topDown ? 18 : 38;
+
+  const animationLeft = useRef(0);
 
   useEffect(() => {
-    remaining.current = 1.2;
-  }, [targetPos]);
+    // Re-arm the animation whenever target changes (lot resize, mode switch)
+    animationLeft.current = 1.4;
+  }, [targetPos, targetFov]);
 
   useFrame((_, dt) => {
-    if (remaining.current <= 0) return;
-    remaining.current -= dt;
+    if (animationLeft.current <= 0) return;
+    animationLeft.current -= dt;
     const k = 1 - Math.exp(-dt * 4);
     camera.position.lerp(targetPos, k);
+    camera.fov = THREE.MathUtils.lerp(camera.fov, targetFov, k);
+    camera.updateProjectionMatrix();
     if (controls?.target) {
       controls.target.lerp(new THREE.Vector3(0, 0, 0), k);
       controls.update();
