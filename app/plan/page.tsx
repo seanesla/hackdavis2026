@@ -5,6 +5,7 @@ import { useSearchParams } from "next/navigation";
 import { motion } from "framer-motion";
 import { useStore } from "@/lib/store";
 import SideRail from "@/components/plan/SideRail";
+import DebugToggle from "@/components/plan/DebugToggle";
 
 const Scene = dynamic(() => import("@/components/Scene"), { ssr: false });
 const ContourBackground = dynamic(
@@ -15,13 +16,50 @@ const ContourBackground = dynamic(
 function PlanInner() {
   const params = useSearchParams();
   const promptParam = params.get("prompt") ?? "";
-  const { runFromPrompt, prompt, running } = useStore();
+  const runFromPrompt = useStore((s) => s.runFromPrompt);
+  const prompt = useStore((s) => s.prompt);
+  const running = useStore((s) => s.running);
+  const plan = useStore((s) => s.plan);
+  const selectedFloor = useStore((s) => s.selectedFloor);
+  const fetchFloorPlan = useStore((s) => s.fetchFloorPlan);
+  const prefetchAllFloorPlans = useStore((s) => s.prefetchAllFloorPlans);
+  const fetchInteriorFor = useStore((s) => s.fetchInteriorFor);
+  const prefetchAllInteriors = useStore((s) => s.prefetchAllInteriors);
+  const selectFloor = useStore((s) => s.selectFloor);
 
   useEffect(() => {
     if (promptParam && promptParam !== prompt && !running) {
       runFromPrompt(promptParam);
     }
   }, [promptParam, prompt, running, runFromPrompt]);
+
+  // The moment the plan stops streaming, kick off floor-plan generation for
+  // every unique (footprint × story) so the user gets an instant reveal on
+  // click. Acts as the safety net too — even if prefetch hasn't finished by
+  // the time they click, the per-floor fetch is still idempotent.
+  useEffect(() => {
+    if (!running && plan?.buildings && plan.buildings.length > 0) {
+      prefetchAllFloorPlans();
+      prefetchAllInteriors();
+    }
+  }, [running, plan, prefetchAllFloorPlans, prefetchAllInteriors]);
+
+  useEffect(() => {
+    if (selectedFloor) {
+      fetchFloorPlan();
+      fetchInteriorFor(selectedFloor.buildingIndex, selectedFloor.storyIndex);
+    }
+  }, [selectedFloor, fetchFloorPlan, fetchInteriorFor]);
+
+  // Escape closes the open floor.
+  useEffect(() => {
+    if (!selectedFloor) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") selectFloor(null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [selectedFloor, selectFloor]);
 
   return (
     <div className="relative flex h-screen w-screen overflow-hidden">
@@ -34,6 +72,7 @@ function PlanInner() {
         className="flex-1 relative"
       >
         <Scene />
+        <DebugToggle />
       </motion.main>
     </div>
   );
