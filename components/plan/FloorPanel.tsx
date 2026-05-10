@@ -88,6 +88,13 @@ export default function FloorPanel() {
                     ? ` Retry in ~${record.retryAfterSeconds}s.`
                     : ""}
                 </div>
+                <button
+                  type="button"
+                  onClick={() => fetchFloorPlan(true)}
+                  className="mt-3 font-mono text-[10px] uppercase tracking-[0.2em] px-3 py-1.5 rounded border border-rose-500/40 text-rose-200 hover:text-paper hover:border-accent/60 transition-colors"
+                >
+                  retry ↻
+                </button>
               </div>
             )}
             {isReady && record?.dataUrl && (

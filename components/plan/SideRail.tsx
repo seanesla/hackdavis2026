@@ -172,7 +172,16 @@ export default function SideRail() {
         />
       </div>
 
-      <div className="flex items-center gap-2 px-6 py-3 border-b border-rule/60">
+      <div
+        className="flex items-center gap-2 px-6 py-3 border-b border-rule/60"
+        title={
+          running
+            ? "the AI is calling tools to lay out the lot, place buildings, and validate setbacks"
+            : steps.length
+            ? "plan complete — click a building to open its floor plan"
+            : "no plan yet — type a brief above and hit enter"
+        }
+      >
         <span
           className={`w-1.5 h-1.5 rounded-full ${
             running ? "bg-accent animate-pulse" : "bg-paper/40"
@@ -206,7 +215,7 @@ export default function SideRail() {
           export ↓
         </button>
         <span className="font-mono text-[10px] uppercase tracking-[0.25em] text-mute/70">
-          stage 0 of construction
+          built for hackdavis · v1 alpha
         </span>
       </div>
     </motion.aside>

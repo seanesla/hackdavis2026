@@ -7,6 +7,7 @@ import { useStore } from "@/lib/store";
 import SideRail from "@/components/plan/SideRail";
 import SceneTools from "@/components/plan/SceneTools";
 import DebugToggle from "@/components/plan/DebugToggle";
+import TransparencyPill from "@/components/plan/TransparencyPill";
 
 const Scene = dynamic(() => import("@/components/Scene"), { ssr: false });
 const AccentGrainient = dynamic(
@@ -101,6 +102,7 @@ function PlanInner() {
       </motion.main>
       <SideRail />
       <SceneTools />
+      <TransparencyPill />
     </div>
   );
 }

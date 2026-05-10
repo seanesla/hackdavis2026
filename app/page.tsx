@@ -122,7 +122,7 @@ export default function Home() {
         animate={{ opacity: loading ? 0 : 1 }}
         transition={{ duration: 0.35 }}
       >
-        stage 0 of construction
+        built for hackdavis · v1 alpha
       </motion.footer>
     </main>
   );

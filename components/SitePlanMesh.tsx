@@ -8,8 +8,18 @@ import {
   useState,
 } from "react";
 import { useFrame, useThree } from "@react-three/fiber";
-import { Edges, Html, Line, RoundedBox } from "@react-three/drei";
+import { Edges, Html as DreiHtml, Line, RoundedBox } from "@react-three/drei";
+import type { ComponentProps } from "react";
 import * as THREE from "three";
+
+// Drei's <Html> defaults to zIndexRange=[16777271, 0] (yes, 16 million)
+// for depth-sorted scene labels. That puts every floating tooltip way
+// above the SideRail / SceneTools / Audit panels (z-10). Wrap it with a
+// low default range so floating UI panels always render on top, while
+// still letting any individual call override via its own zIndexRange.
+function Html(props: ComponentProps<typeof DreiHtml>) {
+  return <DreiHtml zIndexRange={[5, 0]} {...props} />;
+}
 
 // Distance-based LOD. When the camera is far away, sub-foot architectural
 // details (mullions, sills, lintels, door handles, flagstone joint lines)
@@ -231,6 +241,7 @@ export default function SitePlanMesh({ siteplan }: Props) {
         setbacks={setbacks}
         buildings={validBuildings}
         parking={stalls}
+        trees={trees ?? []}
         accent={accent}
         buildable={buildable}
         manualWalkways={walkways}
@@ -246,6 +257,7 @@ export default function SitePlanMesh({ siteplan }: Props) {
             lot,
             validBuildings,
             stalls,
+            trees ?? [],
             (walkways?.length ?? 0) > 0
           )}
         />
@@ -543,6 +555,7 @@ function SiteworkLayer({
   setbacks,
   buildings,
   parking,
+  trees,
   accent,
   buildable,
   manualWalkways,
@@ -551,14 +564,15 @@ function SiteworkLayer({
   setbacks: SitePlan["setbacks"];
   buildings: NonNullable<SitePlan["buildings"]>;
   parking: NonNullable<SitePlan["parking"]>;
+  trees: NonNullable<SitePlan["trees"]>;
   accent: string;
   buildable: boolean;
   manualWalkways?: SitePlan["walkways"];
 }) {
   const hasManualWalks = (manualWalkways?.length ?? 0) > 0;
   const autoPaths = useMemo(
-    () => computeAutoPaths(lot, buildings, parking, hasManualWalks),
-    [lot, buildings, parking, hasManualWalks]
+    () => computeAutoPaths(lot, buildings, parking, trees, hasManualWalks),
+    [lot, buildings, parking, trees, hasManualWalks]
   );
 
   return (
@@ -770,13 +784,44 @@ type AutoPath = Walkway & { kind: "front_walk" | "driveway"; building?: number }
 const STALL_W_FT = 9;
 const STALL_D_FT = 18;
 
+// Per-species canopy-radius coefficient. Stays in sync with the renderer +
+// place_trees in lib/tools.ts. Used to size the circular tree obstacles
+// auto-paths must route around.
+const AUTOPATH_CANOPY_R: Record<string, number> = {
+  oak: 0.42,
+  maple: 0.4,
+  pine: 0.3,
+  palm: 0.16,
+};
+// Small buffer between path edge and canopy edge so leaves don't graze the
+// driveway / walk.
+const TREE_PATH_BUFFER_FT = 1;
+
+// Distance from a circle to an axis-aligned rectangle. Returns true when
+// the circle overlaps the rectangle (or sits inside it).
+function circleOverlapsRect(
+  cx: number,
+  cz: number,
+  cr: number,
+  r: Rect,
+): boolean {
+  const dx = Math.max(r.x - cx, 0, cx - (r.x + r.w));
+  const dz = Math.max(r.z - cz, 0, cz - (r.z + r.d));
+  return Math.hypot(dx, dz) < cr;
+}
+
 function computeAutoPaths(
   lot: SitePlan["lot"],
   buildings: NonNullable<SitePlan["buildings"]>,
   parking: NonNullable<SitePlan["parking"]>,
+  trees: NonNullable<SitePlan["trees"]>,
   hasManualWalks: boolean
 ): AutoPath[] {
-  if (hasManualWalks) return [];
+  // Manual walks suppress the auto front-walks (the user/agent has chosen
+  // their own pedestrian routing). They do NOT suppress the auto-driveway —
+  // a driveway connects parking to the street, which manual walkways
+  // typically don't model. Suppressing both was a bug: any manual walkway
+  // would orphan the parking lot from the curb.
   const out: AutoPath[] = [];
   const buildingRects: Rect[] = buildings.map((b) => ({
     x: b.x,
@@ -790,6 +835,19 @@ function computeAutoPaths(
     w: STALL_W_FT,
     d: STALL_D_FT,
   }));
+  // Trees as circular obstacles. The auto-driveway + auto front-walks were
+  // previously plowing through any tree in their corridor because the only
+  // obstacles they checked were buildings + stalls. Shift candidates dodge
+  // these now too.
+  const treeCircles = trees.map((t) => ({
+    x: t.x,
+    z: t.z,
+    r:
+      (AUTOPATH_CANOPY_R[t.species] ?? 0.4) * t.height +
+      TREE_PATH_BUFFER_FT,
+  }));
+  const overlapsAnyTree = (r: Rect): boolean =>
+    treeCircles.some((c) => circleOverlapsRect(c.x, c.z, c.r, r));
 
   const obstaclesFor = (kind: "walk" | "drive"): Rect[] =>
     kind === "walk"
@@ -800,7 +858,9 @@ function computeAutoPaths(
         buildingRects;
 
   // ── Front walks: curb (z = -8) → each building's door
-  for (let i = 0; i < buildings.length; i++) {
+  // Skipped entirely if the agent placed manual walkways — they take over
+  // pedestrian routing.
+  if (!hasManualWalks) for (let i = 0; i < buildings.length; i++) {
     const b = buildings[i];
     const doorX = b.x + b.w / 2;
     if (b.z <= 0) continue;
@@ -809,14 +869,23 @@ function computeAutoPaths(
     // Prefer the centered path; if blocked, slide left or right by up to 12ft
     // in 3ft increments so we still serve a building whose door is partially
     // occluded by parking.
+    // Range extended to ±18ft (was ±12ft) — a mature oak has ~10ft canopy
+    // radius, so a centered walk needs to slide ~12-15ft to clear it.
     const candidatesX = [
       doorX,
       doorX - 3, doorX + 3,
       doorX - 6, doorX + 6,
       doorX - 9, doorX + 9,
       doorX - 12, doorX + 12,
+      doorX - 15, doorX + 15,
+      doorX - 18, doorX + 18,
     ];
+    // Two-pass selection: prefer the first candidate that's clear of
+    // buildings+stalls AND dodges every tree canopy. If no such X exists,
+    // fall back to the first building/stall-clear candidate even if it
+    // grazes a tree — a walk grazing leaves still beats no walk at all.
     let chosenX: number | null = null;
+    let fallbackX: number | null = null;
     for (const tx of candidatesX) {
       if (tx < walkW / 2 || tx > lot.width - walkW / 2) continue;
       const r: Rect = { x: tx - walkW / 2, z: 0, w: walkW, d: b.z };
@@ -827,11 +896,14 @@ function computeAutoPaths(
         if (idx < buildingRects.length) return idx !== i;
         return true;
       });
-      if (!otherObstacles.some((o) => rectsOverlap(r, o))) {
-        chosenX = tx;
-        break;
-      }
+      if (otherObstacles.some((o) => rectsOverlap(r, o))) continue;
+      if (fallbackX === null) fallbackX = tx;
+      // Prefer a tree-free corridor when one is available.
+      if (overlapsAnyTree(r)) continue;
+      chosenX = tx;
+      break;
     }
+    if (chosenX === null) chosenX = fallbackX;
     if (chosenX === null) continue;
     out.push({
       kind: "front_walk",
@@ -858,10 +930,16 @@ function computeAutoPaths(
       const dwayW = 12;
       const buildingObstacles = obstaclesFor("drive");
 
-      const tryX = (x: number): boolean => {
+      // Building-only check: the hard constraint (driveway can't pass
+      // through a wall). Tree dodge is a soft preference handled below.
+      const buildingClearX = (x: number): boolean => {
         if (x < dwayW / 2 || x > lot.width - dwayW / 2) return false;
         const r: Rect = { x: x - dwayW / 2, z: 0, w: dwayW, d: minZ };
         return !buildingObstacles.some((o) => rectsOverlap(r, o));
+      };
+      const treeClearX = (x: number): boolean => {
+        const r: Rect = { x: x - dwayW / 2, z: 0, w: dwayW, d: minZ };
+        return !overlapsAnyTree(r);
       };
 
       // Prefer ordering: (1) directly aligned with parking, (2) shifted toward
@@ -881,13 +959,20 @@ function computeAutoPaths(
       candidates.push(dwayW / 2 + 1);
       candidates.push(lot.width - dwayW / 2 - 1);
 
+      // Two-pass like the front-walk: first try to find a candidate that's
+      // both building-clear AND tree-clear. If none exists, accept the first
+      // building-clear candidate so the driveway always renders — better to
+      // graze a tree canopy than fail to draw the approach.
       let dwayX: number | null = null;
+      let dwayFallback: number | null = null;
       for (const cx of candidates) {
-        if (tryX(cx)) {
-          dwayX = cx;
-          break;
-        }
+        if (!buildingClearX(cx)) continue;
+        if (dwayFallback === null) dwayFallback = cx;
+        if (!treeClearX(cx)) continue;
+        dwayX = cx;
+        break;
       }
+      if (dwayX === null) dwayX = dwayFallback;
       if (dwayX !== null) {
         // Real parking lots have a back-out aisle in front of the stalls
         // — cars approach via a driveway, turn into the aisle, then back
@@ -907,8 +992,14 @@ function computeAutoPaths(
         //      when buildings sit right behind the parking with no aisle gap.
         const aisleZ = Math.max(2, minZ - 6);
         const aisleHalf = dwayW / 2;
-        const overlapsBuilding = (rect: Rect): boolean =>
+        // Hard constraint: aisle can never overlap a building wall.
+        const buildingOnlyBlocked = (rect: Rect): boolean =>
           buildingObstacles.some((o) => rectsOverlap(rect, o));
+        // Soft constraint: prefer not to graze trees, but accept it if no
+        // tree-free option exists — better an aisle through a few canopies
+        // than no aisle at all.
+        const treeClearedBlocked = (rect: Rect): boolean =>
+          buildingOnlyBlocked(rect) || overlapsAnyTree(rect);
 
         const basicAisleLeft = minX - 3;
         const basicAisleRight = maxX + 3;
@@ -922,12 +1013,18 @@ function computeAutoPaths(
           d: dwayW,
         });
 
-        const extOK = !overlapsBuilding(
-          aisleRect(extAisleLeft, extAisleRight),
-        );
-        const basicOK = !overlapsBuilding(
+        let extOK = !treeClearedBlocked(aisleRect(extAisleLeft, extAisleRight));
+        let basicOK = !treeClearedBlocked(
           aisleRect(basicAisleLeft, basicAisleRight),
         );
+        // If trees blocked both shapes, retry with the building-only
+        // constraint so we still emit an aisle.
+        if (!extOK && !basicOK) {
+          extOK = !buildingOnlyBlocked(aisleRect(extAisleLeft, extAisleRight));
+          basicOK = !buildingOnlyBlocked(
+            aisleRect(basicAisleLeft, basicAisleRight),
+          );
+        }
 
         if (extOK || basicOK) {
           // Approach: curb → aisle (cut short so it tees into the aisle

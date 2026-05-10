@@ -59,47 +59,42 @@ export default function FloatingHammer() {
     return () => window.removeEventListener("resize", updateViewport);
   }, []);
 
-  // Track the SideRail's hammer compartment. The SideRail slides in over
-  // 600ms via a CSS transform, which moves the slot's screen position every
-  // frame without firing any layout/resize events — so we poll on rAF for
-  // the first second to follow it, then stop. ResizeObserver wouldn't help
-  // here because transforms don't change the layout box.
-  // When we leave /plan, reset slotRect to the fallback so the centered
-  // hammer always returns to the exact same spot regardless of what the
-  // sidebar last measured. Otherwise centerX = (vw - slotRect.w * scale)/2
-  // would drift between visits as the sidebar's measured width changes.
+  // Track the SideRail's hammer compartment continuously while on /plan.
+  // The SideRail slides in via CSS transform — transforms move the slot's
+  // screen position every frame without firing resize or ResizeObserver
+  // events, so we have to poll. Earlier this was time-bounded to 1s to
+  // "save work," but that left slotRect stale forever after the cap, so
+  // any later layout shift (font loads, dev-tools opening, browser zoom,
+  // sidebar content reflow) drifted the hammer off-center until a window
+  // resize. Polling on rAF forever is microseconds per frame and the
+  // shallow-equal short-circuit below means React only re-renders when
+  // the rect actually changes — no perf cost.
+  // On leaving /plan, reset slotRect to the fallback so the centered pose
+  // is deterministic across visits.
   useEffect(() => {
     if (!pathname?.startsWith("/plan")) {
       setSlotRect({ x: 0, y: 0, w: FALLBACK_W, h: FALLBACK_H });
       return;
     }
 
-    const measure = () => {
-      const el = document.getElementById("hammer-slot");
-      if (!el) return;
-      const r = el.getBoundingClientRect();
-      setSlotRect((prev) =>
-        prev.x === r.left && prev.y === r.top &&
-        prev.w === r.width && prev.h === r.height
-          ? prev
-          : { x: r.left, y: r.top, w: r.width, h: r.height },
-      );
-    };
-
-    const startTime = performance.now();
     let rafId = 0;
     const pollFrame = () => {
-      measure();
-      if (performance.now() - startTime < 1000) {
-        rafId = requestAnimationFrame(pollFrame);
+      const el = document.getElementById("hammer-slot");
+      if (el) {
+        const r = el.getBoundingClientRect();
+        setSlotRect((prev) =>
+          prev.x === r.left && prev.y === r.top &&
+          prev.w === r.width && prev.h === r.height
+            ? prev
+            : { x: r.left, y: r.top, w: r.width, h: r.height },
+        );
       }
+      rafId = requestAnimationFrame(pollFrame);
     };
     rafId = requestAnimationFrame(pollFrame);
 
-    window.addEventListener("resize", measure);
     return () => {
       cancelAnimationFrame(rafId);
-      window.removeEventListener("resize", measure);
     };
   }, [pathname]);
 

@@ -235,26 +235,25 @@ export const place_parking: ToolFn = (plan, args) => {
 
   const buildings = plan.buildings ?? [];
   const stalls: { x: number; z: number }[] = [];
-  let blocked = 0;
-  let rowsUsed = 0;
 
-  // Multi-row pack, back-to-front. For each row, find the clear x-intervals
-  // (gaps between buildings whose z-range overlaps this row) and CENTER a
-  // run of stalls inside the largest interval. Avoids the previous failure
-  // mode where a building in the middle of a row split parking into two
-  // tiny clumps shoved against either side setback. With centered intervals,
-  // the row reads as a deliberate parking strip even when wrapped around a
-  // building.
+  // Two-pass layout. PASS 1: walk rows back-to-front and compute per-row
+  // capacity (number of 9ft slots that fit between building blockers, with
+  // each x-interval centered when used). PASS 2: pick the minimum rows
+  // needed to hold the request, then distribute stalls round-robin so the
+  // rows come out as even as possible (10/10/10, not 12/12/6). Without the
+  // distribution step, the greedy first-row-full approach made big lots
+  // look like an afterthought parking strip.
+  type Interval = { x0: number; x1: number };
+  type RowInfo = { z: number; intervals: Interval[]; capacity: number };
+
+  const rowInfos: RowInfo[] = [];
   for (let z = maxZ - STALL_D; z >= minZ - 1e-6; z -= STALL_D) {
-    if (stalls.length >= requested) break;
-
     const rowZEnd = z + STALL_D;
     const rowBlockers = buildings
       .filter((b) => b.z < rowZEnd && b.z + b.d > z)
       .sort((a, b) => a.x - b.x);
 
-    // Build clear x-intervals across this row.
-    const intervals: { x0: number; x1: number }[] = [];
+    const intervals: Interval[] = [];
     let lastX = minX;
     for (const b of rowBlockers) {
       if (b.x > lastX) intervals.push({ x0: lastX, x1: Math.min(b.x, maxX) });
@@ -262,45 +261,78 @@ export const place_parking: ToolFn = (plan, args) => {
     }
     if (maxX > lastX) intervals.push({ x0: lastX, x1: maxX });
 
-    // Largest first — fill the biggest run before the skinny side strips.
+    // Largest first so the biggest run gets filled before skinny side strips.
     intervals.sort((a, b) => b.x1 - b.x0 - (a.x1 - a.x0));
 
-    let placedThisRow = 0;
-    for (const iv of intervals) {
-      const remaining = requested - stalls.length;
-      if (remaining === 0) break;
-      const fits = Math.floor((iv.x1 - iv.x0) / STALL_W);
-      if (fits === 0) continue;
-      const place = Math.min(fits, remaining);
-      const blockW = place * STALL_W;
-      // Center the stall run inside this interval.
-      const startX = iv.x0 + (iv.x1 - iv.x0 - blockW) / 2;
-      for (let i = 0; i < place; i++) {
-        stalls.push({ x: startX + i * STALL_W, z });
-        placedThisRow++;
-      }
-    }
-    if (placedThisRow === 0 && rowBlockers.length > 0) blocked++;
-    if (placedThisRow > 0) rowsUsed++;
+    const capacity = intervals.reduce(
+      (s, iv) => s + Math.floor((iv.x1 - iv.x0) / STALL_W),
+      0,
+    );
+    if (capacity > 0) rowInfos.push({ z, intervals, capacity });
   }
 
+  // How many rows do we actually need? The smallest N such that the top N
+  // rows (in z-order) together hold ≥ requested stalls.
+  let rowsNeeded = 0;
+  let cumCap = 0;
+  for (const r of rowInfos) {
+    rowsNeeded++;
+    cumCap += r.capacity;
+    if (cumCap >= requested) break;
+  }
+  // Distribute round-robin so the rows come out as balanced as possible
+  // given each row's capacity ceiling.
+  const perRow: number[] = new Array(rowsNeeded).fill(0);
+  let remaining = Math.min(requested, cumCap);
+  let cursor = 0;
+  let safety = remaining + rowsNeeded * 2;
+  while (remaining > 0 && safety-- > 0) {
+    if (perRow[cursor] < rowInfos[cursor].capacity) {
+      perRow[cursor]++;
+      remaining--;
+    }
+    cursor = (cursor + 1) % Math.max(1, rowsNeeded);
+    if (perRow.every((n, i) => n >= rowInfos[i].capacity)) break;
+  }
+
+  // Place each row's allocated stalls, centered within their intervals.
+  let rowsUsed = 0;
+  for (let i = 0; i < rowsNeeded; i++) {
+    const target = perRow[i];
+    if (target === 0) continue;
+    rowsUsed++;
+    let placed = 0;
+    for (const iv of rowInfos[i].intervals) {
+      if (placed >= target) break;
+      const fits = Math.floor((iv.x1 - iv.x0) / STALL_W);
+      if (fits === 0) continue;
+      const place = Math.min(fits, target - placed);
+      const blockW = place * STALL_W;
+      const startX = iv.x0 + (iv.x1 - iv.x0 - blockW) / 2;
+      for (let k = 0; k < place; k++) {
+        stalls.push({ x: startX + k * STALL_W, z: rowInfos[i].z });
+        placed++;
+      }
+    }
+  }
   const next: SitePlan = { ...plan, parking: stalls };
   if (stalls.length === 0) {
     return fail(
       next,
-      `Could not place any stalls — buildings fill the buildable envelope (${blocked} candidates blocked).`
+      "Could not place any stalls — buildings fill the buildable envelope.",
     );
   }
   if (stalls.length < requested) {
     const shortBy = requested - stalls.length;
     return ok(
       next,
-      `Fit ${stalls.length} of ${requested} requested stalls across ${rowsUsed} row${rowsUsed === 1 ? "" : "s"} (back-to-front, centered per row; ${blocked} rows fully blocked by buildings). No more 9x18 ft cells available within setbacks; cannot fit ${shortBy} more.`
+      `Fit ${stalls.length} of ${requested} requested stalls across ${rowsUsed} row${rowsUsed === 1 ? "" : "s"} (evenly distributed). No more 9x18 ft cells available within setbacks; cannot fit ${shortBy} more.`,
     );
   }
+  const perRowSummary = perRow.filter((n) => n > 0).join("/");
   return ok(
     next,
-    `Placed ${stalls.length} stalls across ${rowsUsed} row${rowsUsed === 1 ? "" : "s"}, each 9x18 ft, centered within each row and avoiding building footprints.`
+    `Placed ${stalls.length} stalls across ${rowsUsed} row${rowsUsed === 1 ? "" : "s"} (${perRowSummary}), evenly distributed and centered.`,
   );
 };
 
@@ -380,11 +412,14 @@ export const place_trees: ToolFn = (plan, args) => {
   const trunkR = 1.2;
 
   // Effective inset depends on whether the chosen side is already fenced.
-  // The canopy must also stay inside the lot — otherwise an oak's ~10ft
-  // foliage radius placed at z=6 would dangle over the auto-rendered
-  // sidewalk (z<0). Use canopy + 1ft as the floor on every side.
+  // The canopy must stay clearly inside the lot — otherwise an oak's ~10ft
+  // foliage radius dangles over the auto-rendered sidewalk (z<0) and reads
+  // as a tree on the curb in 3/4 perspective view. canopy + 3 gives the
+  // canopy edge a visible 3ft margin so it never appears to overhang the
+  // road. Was canopy + 1 — too tight; canopies grazed the curb visually
+  // even when math said they were inside the lot.
   const canopyR = CANOPY_R[species] * height;
-  const baseInset = Math.max(6, canopyR + 1);
+  const baseInset = Math.max(8, canopyR + 3);
   const fencedSet = new Set<string>();
   for (const f of plan.fences ?? []) for (const s of f.sides) fencedSet.add(s);
   const insetFor = (side: "front" | "back" | "left" | "right"): number =>
@@ -516,6 +551,60 @@ export const place_trees: ToolFn = (plan, args) => {
     return Math.hypot(dx, dz);
   };
 
+  // Predict where the renderer's auto front-walks + driveway will be drawn
+  // and treat those as obstacles. Without this, trees land inside the
+  // soon-to-be-asphalt corridor and the renderer either plows through them
+  // or has to fall back to a leaf-grazing path. Auto-paths only fire when
+  // there are no manual walkways (matching SitePlanMesh's hasManualWalks
+  // suppression rule).
+  type AutoPathRect = { x: number; z: number; w: number; d: number };
+  const autoPathRects: AutoPathRect[] = [];
+  if (walkways.length === 0) {
+    const FRONT_WALK_W = 5;
+    const DWAY_W = 12;
+    // Front walks: each building's centered concrete walk from curb to door.
+    for (const b of buildings) {
+      if (b.z <= 0) continue;
+      autoPathRects.push({
+        x: b.x + b.w / 2 - FRONT_WALK_W / 2,
+        z: 0,
+        w: FRONT_WALK_W,
+        d: b.z,
+      });
+    }
+    // Driveway approach + aisle. Mirrors the renderer's centered prediction;
+    // we don't try to model the X-shift fallbacks (those exist for buildings
+    // in the way, not trees — and we're avoiding placing trees in the most
+    // likely corridor anyway).
+    if (stalls.length > 0) {
+      const minStallZ = Math.min(...stalls.map((p) => p.z));
+      const frontRow = stalls.filter((p) => p.z < minStallZ + 2);
+      if (frontRow.length > 0) {
+        const minStallX = Math.min(...frontRow.map((p) => p.x));
+        const maxStallX = Math.max(...frontRow.map((p) => p.x)) + STALL_W;
+        const dwayCenterX = (minStallX + maxStallX) / 2;
+        // Approach (curb → row front).
+        autoPathRects.push({
+          x: dwayCenterX - DWAY_W / 2,
+          z: 0,
+          w: DWAY_W,
+          d: minStallZ,
+        });
+        // Aisle (back-out lane in front of stalls). Same shape as the
+        // renderer's "extended" aisle so we cover the L when present.
+        const aisleZ = Math.max(2, minStallZ - 6);
+        const aisleLeft = Math.min(minStallX - 3, dwayCenterX - DWAY_W / 2);
+        const aisleRight = Math.max(maxStallX + 3, dwayCenterX + DWAY_W / 2);
+        autoPathRects.push({
+          x: aisleLeft,
+          z: aisleZ - DWAY_W / 2,
+          w: aisleRight - aisleLeft,
+          d: DWAY_W,
+        });
+      }
+    }
+  }
+
   for (const c of candidates) {
     if (placed.length >= count) break;
 
@@ -542,6 +631,15 @@ export const place_trees: ToolFn = (plan, args) => {
     for (const w of walkways) {
       const d = distPointToSegment(c.x, c.z, w.x1, w.z1, w.x2, w.z2);
       if (d < treeR + w.width / 2) {
+        blocked = true;
+        break;
+      }
+    }
+    if (blocked) continue;
+
+    // Clear of the predicted auto-path corridors (front walks + driveway).
+    for (const p of autoPathRects) {
+      if (distToRect(c.x, c.z, p.x, p.z, p.w, p.d) < treeR) {
         blocked = true;
         break;
       }
