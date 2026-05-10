@@ -644,9 +644,9 @@ export const place_walkway: ToolFn = (plan, args) => {
   const s1 = snapToEntrance(x1, z1, buildings);
   const s2 = snapToEntrance(x2, z2, buildings);
   let nx1 = s1.x;
-  let nz1 = s1.z;
+  const nz1 = s1.z;
   let nx2 = s2.x;
-  let nz2 = s2.z;
+  const nz2 = s2.z;
   const STREET_EDGE_TOL = 6;
   if (s1.index !== null && s2.index === null) {
     if (nz2 <= STREET_EDGE_TOL || nz2 >= plan.lot.depth - STREET_EDGE_TOL) {

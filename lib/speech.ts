@@ -2,13 +2,32 @@
 // Web Speech API wrapper. Chrome/Edge only. SSR-safe.
 import { useCallback, useEffect, useRef, useState } from "react";
 
-// SpeechRecognition isn't in the standard DOM lib types — fall back to any
-// for the constructor and event objects.
-type AnyRecognition = any;
+// SpeechRecognition isn't in the standard DOM lib types — minimal shim.
+type SpeechRecognitionLike = {
+  continuous: boolean;
+  interimResults: boolean;
+  lang: string;
+  maxAlternatives: number;
+  onresult: ((event: SpeechRecognitionEventLike) => void) | null;
+  onerror: ((event: { error?: string }) => void) | null;
+  onend: (() => void) | null;
+  onstart: (() => void) | null;
+  start: () => void;
+  stop: () => void;
+  abort: () => void;
+};
+type SpeechRecognitionEventLike = {
+  resultIndex: number;
+  results: ArrayLike<ArrayLike<{ transcript: string }> & { isFinal: boolean }>;
+};
+type RecognitionCtor = new () => SpeechRecognitionLike;
 
-function getRecognitionCtor(): AnyRecognition | null {
+function getRecognitionCtor(): RecognitionCtor | null {
   if (typeof window === "undefined") return null;
-  const w = window as any;
+  const w = window as unknown as {
+    SpeechRecognition?: RecognitionCtor;
+    webkitSpeechRecognition?: RecognitionCtor;
+  };
   return w.SpeechRecognition || w.webkitSpeechRecognition || null;
 }
 
@@ -175,7 +194,7 @@ export function useRecognizer(): RecognizerHandle {
   const [finalTranscript, setFinalTranscript] = useState("");
   const [interim, setInterim] = useState("");
   const [error, setError] = useState<string | null>(null);
-  const recRef = useRef<AnyRecognition | null>(null);
+  const recRef = useRef<SpeechRecognitionLike | null>(null);
   const listeningRef = useRef(false);
   const finalRef = useRef("");
 
@@ -188,7 +207,7 @@ export function useRecognizer(): RecognizerHandle {
     rec.lang = "en-US";
     rec.maxAlternatives = 1;
 
-    rec.onresult = (event: any) => {
+    rec.onresult = (event: SpeechRecognitionEventLike) => {
       let finalText = "";
       let interimText = "";
       for (let i = event.resultIndex; i < event.results.length; i++) {
@@ -203,7 +222,7 @@ export function useRecognizer(): RecognizerHandle {
       }
       setInterim(interimText);
     };
-    rec.onerror = (event: any) => {
+    rec.onerror = (event: { error?: string }) => {
       setError(event?.error ?? "speech error");
       listeningRef.current = false;
       setListening(false);
