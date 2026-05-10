@@ -3,11 +3,18 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
-    "build": "next build",
+    "predev": "node scripts/predev-check.mjs",
+    "dev": "cross-env NODE_OPTIONS=--max-old-space-size=8192 next dev --turbopack",
+    "dev:legacy": "cross-env NODE_OPTIONS=--max-old-space-size=8192 next dev --webpack",
+    "build": "cross-env NODE_OPTIONS=--max-old-space-size=8192 next build",
     "start": "next start",
     "lint": "eslint",
+    "clean": "rimraf .next",
+    "reset": "rimraf .next node_modules package-lock.json && npm install",
     "generate-wallet": "tsx scripts/generate-wallet.ts"
+  },
+  "engines": {
+    "node": ">=22.0.0"
   },
   "dependencies": {
     "@google/genai": "^2.0.1",
@@ -34,8 +41,10 @@
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "@types/three": "^0.184.1",
+    "cross-env": "^7.0.3",
     "eslint": "^9",
     "eslint-config-next": "16.2.6",
+    "rimraf": "^6.0.1",
     "tailwindcss": "^4",
     "tsx": "^4.21.0",
     "typescript": "^5"

@@ -8,9 +8,36 @@ import {
 import { TOOLS } from "@/lib/tools";
 import { TOOL_DECLARATIONS, ALLOWED_TOOL_NAMES } from "@/lib/toolDeclarations";
 import { isInsideSetbacks } from "@/lib/geometry";
-import { USER_ID, buildMemoryContext, saveSession } from "@/lib/backboard";
+import { getPreferences } from "@/lib/backboard";
 import { rateLimit, rateLimitResponse } from "@/lib/rateLimit";
 import type { SitePlan, Step } from "@/lib/types";
+
+type HistoryItem = { prompt: string; sitePlan: SitePlan };
+
+function summarizePlan(plan: SitePlan): string {
+  const acres = ((plan.lot.width * plan.lot.depth) / 43560).toFixed(2);
+  const parts = [`${acres} acre lot`];
+  const buildings = plan.buildings ?? [];
+  if (buildings.length === 1) {
+    parts.push(`${buildings[0].stories}-story building`);
+  } else if (buildings.length > 1) {
+    parts.push(`${buildings.length} buildings`);
+  }
+  if (plan.parking?.length) parts.push(`${plan.parking.length} parking spots`);
+  return parts.join(", ");
+}
+
+function buildMemoryFromHistory(history: HistoryItem[]): string {
+  if (!history.length) return "";
+  const lines = history
+    .slice(0, 5)
+    .map((s, i) => `  ${i + 1}. "${s.prompt}" → ${summarizePlan(s.sitePlan)}`);
+  return [
+    `User previously planned:`,
+    ...lines,
+    `Use this history to infer reasonable defaults when the current prompt is vague.`,
+  ].join("\n");
+}
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -231,9 +258,26 @@ export async function POST(req: Request) {
   }
 
   let prompt: string;
+  let history: HistoryItem[] = [];
+  let threadId: string | null = null;
   try {
     const body = await req.json();
     prompt = typeof body?.prompt === "string" ? body.prompt : "";
+    if (typeof body?.threadId === "string" && body.threadId) {
+      threadId = body.threadId;
+    }
+    if (Array.isArray(body?.history)) {
+      history = (body.history as unknown[])
+        .filter(
+          (h): h is HistoryItem =>
+            !!h &&
+            typeof h === "object" &&
+            typeof (h as HistoryItem).prompt === "string" &&
+            !!(h as HistoryItem).sitePlan &&
+            typeof (h as HistoryItem).sitePlan === "object",
+        )
+        .slice(0, 5);
+    }
   } catch {
     return Response.json({ error: "Body must be JSON: { prompt: string }" }, { status: 400 });
   }
@@ -243,11 +287,17 @@ export async function POST(req: Request) {
 
   const ai = new GoogleGenAI({ apiKey });
 
-  // Pull a short summary of past sessions from Backboard (if available) and
-  // prepend it to the system prompt so the agent can use prior context as
-  // weak defaults when the new prompt is vague.
-  const memory = await buildMemoryContext(USER_ID).catch(() => "");
-  const systemInstruction = memory ? `${SYSTEM_PROMPT}\n\n${memory}` : SYSTEM_PROMPT;
+  // Browser-owned memory: history list + Backboard-derived preferences.
+  // Both are best-effort — the prompt still works fine without them.
+  const recentHistory = buildMemoryFromHistory(history);
+  const preferences = await getPreferences(threadId).catch(() => "");
+  const memoryParts = [
+    recentHistory,
+    preferences ? `User design preferences (from past sessions):\n${preferences}` : "",
+  ].filter(Boolean);
+  const systemInstruction = memoryParts.length
+    ? `${SYSTEM_PROMPT}\n\n${memoryParts.join("\n\n")}`
+    : SYSTEM_PROMPT;
 
   // Conversation history. Gemini multi-turn function calling requires us to
   // append both the model's function-call turn and our function-response turn
@@ -346,13 +396,6 @@ export async function POST(req: Request) {
       finalized = true;
     }
 
-    if (plan) {
-      // Best-effort persistence — never let a Backboard outage fail the render.
-      await saveSession(USER_ID, plan, prompt).catch((err) => {
-        console.error("[backboard] saveSession failed", err);
-      });
-    }
-
     return Response.json({
       ok: true,
       plan,
@@ -385,11 +428,6 @@ export async function POST(req: Request) {
       };
       steps.push(synthStep);
       stages.push({ step: synthStep, plan });
-      if (plan) {
-        await saveSession(USER_ID, plan, prompt).catch((saveErr) => {
-          console.error("[backboard] saveSession failed", saveErr);
-        });
-      }
       return Response.json({
         ok: true,
         plan,

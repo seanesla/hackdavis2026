@@ -28,7 +28,11 @@ type Rect = { x: number; y: number; w: number; h: number };
 export default function FloatingHammer() {
   const loading = useStore((s) => s.loading);
   const running = useStore((s) => s.running);
+  const plan = useStore((s) => s.plan);
   const pathname = usePathname();
+
+  const waiting = (loading || running) && plan === null;
+  const forging = running && plan !== null;
 
   const [vw, setVw] = useState(0);
   const [vh, setVh] = useState(0);
@@ -49,9 +53,11 @@ export default function FloatingHammer() {
     return () => window.removeEventListener("resize", updateViewport);
   }, []);
 
-  // Track the SideRail's hammer compartment. Re-measure on resize and a
-  // couple of beats after a route change (the compartment mounts after the
-  // first paint of /plan, so an immediate read returns null).
+  // Track the SideRail's hammer compartment. The SideRail slides in over
+  // 600ms via a CSS transform, which moves the slot's screen position every
+  // frame without firing any layout/resize events — so we poll on rAF for
+  // the first second to follow it, then stop. ResizeObserver wouldn't help
+  // here because transforms don't change the layout box.
   useEffect(() => {
     const measure = () => {
       const el = document.getElementById("hammer-slot");
@@ -64,22 +70,43 @@ export default function FloatingHammer() {
           : { x: r.left, y: r.top, w: r.width, h: r.height },
       );
     };
-    measure();
-    const t1 = window.setTimeout(measure, 50);
-    const t2 = window.setTimeout(measure, 250);
+
+    const startTime = performance.now();
+    let rafId = 0;
+    const pollFrame = () => {
+      measure();
+      if (performance.now() - startTime < 1000) {
+        rafId = requestAnimationFrame(pollFrame);
+      }
+    };
+    rafId = requestAnimationFrame(pollFrame);
+
     window.addEventListener("resize", measure);
     return () => {
+      cancelAnimationFrame(rafId);
       window.removeEventListener("resize", measure);
-      window.clearTimeout(t1);
-      window.clearTimeout(t2);
     };
   }, [pathname]);
 
   const slot: Slot = useMemo(() => {
-    if (loading || running) return "center";
+    if (waiting) return "center";
     if (pathname?.startsWith("/plan")) return "sidebar";
     return "hidden";
-  }, [loading, running, pathname]);
+  }, [waiting, pathname]);
+
+  // Don't start the hammer chop until the floating hammer has finished its
+  // 750ms fly-to-sidebar animation. Otherwise it strikes mid-flight, which
+  // looks weird and reads as "sideways" because it's hammering while the
+  // div is still translating across the screen.
+  const [settled, setSettled] = useState(false);
+  useEffect(() => {
+    if (slot !== "sidebar") {
+      setSettled(false);
+      return;
+    }
+    const timer = setTimeout(() => setSettled(true), 800);
+    return () => clearTimeout(timer);
+  }, [slot]);
 
   const { centerX, centerY } = useMemo(
     () => ({
@@ -141,7 +168,8 @@ export default function FloatingHammer() {
       }}
     >
       <Hammer3D
-        isLoading={loading || running}
+        isLoading={waiting}
+        forging={forging && settled}
         subtle={slot === "sidebar"}
         interactive={slot === "sidebar"}
       />
