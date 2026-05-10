@@ -5,6 +5,7 @@ import { useStore } from "@/lib/store";
 import Step from "./Step";
 import AccentPicker from "@/components/AccentPicker";
 import CompartmentFire from "./CompartmentFire";
+import MintNftButton from "./MintNftButton";
 
 export default function SideRail() {
   const { prompt, steps, running } = useStore();
@@ -62,8 +63,11 @@ export default function SideRail() {
         ))}
       </ol>
 
-      <div className="px-6 py-4 border-t border-rule/60 font-mono text-[10px] uppercase tracking-[0.25em] text-mute/70">
-        stage 0 of construction
+      <div className="px-6 py-4 border-t border-rule/60 space-y-3">
+        <MintNftButton />
+        <div className="font-mono text-[10px] uppercase tracking-[0.25em] text-mute/70">
+          stage 0 of construction
+        </div>
       </div>
     </motion.aside>
   );

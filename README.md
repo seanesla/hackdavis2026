@@ -78,3 +78,50 @@ npm run dev
 ```
 
 then open http://localhost:3000, type a prompt, and the mock plan animates into the 3D scene.
+
+## NFT minting (solana devnet)
+
+after a plan finalizes, the side rail shows a **mint as NFT** button. clicking it captures the 3D canvas as a PNG, uploads it + the plan metadata to Arweave (via Irys), and mints a Metaplex Core asset directly to your Phantom wallet. the backend pays — no Phantom popups, no signing on the user side.
+
+### one-time setup
+
+1. **generate a backend keypair**
+
+   ```bash
+   npm run generate-wallet
+   ```
+
+   this creates a fresh keypair, base58-encodes the secret to `.env.local` as `SOLANA_SECRET_KEY`, and prints the public address. it refuses to overwrite an existing key.
+
+2. **fund it with devnet SOL** — copy the printed address and either:
+
+   ```bash
+   solana airdrop 2 <address> --url devnet
+   ```
+
+   or paste the address into [faucet.solana.com](https://faucet.solana.com) (pick devnet). 1 SOL is plenty for many mints; airdrop limits are per-address-per-epoch, so re-run if you hit the cap.
+
+3. **restart the dev server** so it picks up the new env var.
+
+4. **point Phantom at devnet** — open Phantom → settings → developer settings → change network → devnet.
+
+### testing the full flow
+
+1. generate any plan ("0.5 acre lot, 2-story brick townhouse, oak trees along the front") and wait for the run to finalize
+2. click **mint as NFT** — Phantom asks for permission to share your address (one-time per origin); approve it
+3. the modal shows a spinner for ~5–15s while the backend uploads to Arweave and lands the tx
+4. on success, click **view on solscan** — you'll see the mint, the metadata URI, and the Arweave-hosted PNG. open Phantom → collectibles (devnet) and the NFT shows up there too.
+
+### env vars
+
+- `SOLANA_SECRET_KEY` — base58-encoded 64-byte secret. backend signs and pays with this.
+- `SOLANA_RPC_URL` — optional; defaults to `https://api.devnet.solana.com`. only override if you have a faster devnet RPC.
+
+### code layout
+
+- `lib/solana.ts` — singleton `Umi` (devnet RPC + mpl-core + Irys uploader) keyed off `SOLANA_SECRET_KEY`
+- `app/api/mint-plan/route.ts` — accepts `{ imageBase64, planJson, recipientAddress, brief }`; returns `{ signature, mintAddress, metadataUri, solscanUrl }`
+- `lib/phantom.ts` — typed Phantom provider; reads the public key only, never signs
+- `components/plan/MintNftButton.tsx` — captures the canvas, calls the endpoint, renders the success/error modal
+- `scripts/generate-wallet.ts` — keypair generator, run via `npm run generate-wallet`
+
