@@ -15,26 +15,26 @@ const AccentGrainient = dynamic(
 function PlanInner() {
   const params = useSearchParams();
   const promptParam = params.get("prompt") ?? "";
-  const { runFromPrompt, prompt, running } = useStore();
+  const { runFromPrompt, prompt, running, steps } = useStore();
 
   useEffect(() => {
-    if (promptParam && promptParam !== prompt && !running) {
+    if (promptParam && promptParam !== prompt && !running && steps.length === 0) {
       runFromPrompt(promptParam);
     }
-  }, [promptParam, prompt, running, runFromPrompt]);
+  }, [promptParam, prompt, running, steps.length, runFromPrompt]);
 
   return (
-    <div className="relative flex h-screen w-screen overflow-hidden">
-      <AccentGrainient />
-      <SideRail />
+    <div className="relative h-screen w-screen overflow-hidden">
+      <AccentGrainient subtle />
       <motion.main
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         transition={{ duration: 0.7, delay: 0.2 }}
-        className="flex-1 relative"
+        className="absolute inset-0"
       >
         <Scene />
       </motion.main>
+      <SideRail />
     </div>
   );
 }
