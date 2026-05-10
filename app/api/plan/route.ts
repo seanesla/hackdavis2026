@@ -42,6 +42,9 @@ function buildMemoryFromHistory(history: HistoryItem[]): string {
 export const runtime = "nodejs";
 export const maxDuration = 60;
 
+const MODEL = "gemini-3.1-flash-lite";
+const MODEL_FALLBACK = "gemini-2.5-flash";
+
 const MAX_ITERATIONS = 20;
 // Modify mode is bounded much tighter — most edits are 1–3 calls
 // (e.g. place_trees + finalize). 8 iterations is plenty and fails fast
@@ -435,10 +438,13 @@ export async function POST(req: Request) {
   let finalized = false;
   let iterations = 0;
 
+  // Sticky fallback: if MODEL 404s once on this key, switch to MODEL_FALLBACK
+  // for the remainder of the loop so we don't re-pay the lookup each iteration.
+  let activeModel = MODEL;
+
   try {
     for (iterations = 0; iterations < iterationCap; iterations++) {
-      const response = await ai.models.generateContent({
-        model: "gemini-3.1-flash-lite",
+      const callConfig = {
         contents,
         config: {
           systemInstruction,
@@ -451,7 +457,20 @@ export async function POST(req: Request) {
           },
           thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
         },
-      });
+      };
+
+      let response;
+      try {
+        response = await ai.models.generateContent({ model: activeModel, ...callConfig });
+      } catch (err) {
+        const detail = err instanceof Error ? err.message : String(err);
+        if (activeModel === MODEL && /404|NOT_FOUND|not found|is not supported/i.test(detail)) {
+          activeModel = MODEL_FALLBACK;
+          response = await ai.models.generateContent({ model: activeModel, ...callConfig });
+        } else {
+          throw err;
+        }
+      }
 
       const calls = response.functionCalls ?? [];
       if (calls.length === 0) {

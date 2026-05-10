@@ -234,8 +234,7 @@ export default function SitePlanMesh({ siteplan }: Props) {
     <group position={[-lot.width / 2, 0, -lot.depth / 2]}>
       <LODSentinel />
       {/* All ground-plane elements pass through SiteworkLayer so the streetscape
-          curb cuts + crosswalks land at the exact same x as the auto walks
-          and driveway. No more drifting / mismatched layouts. */}
+          curb cuts + crosswalks land at the exact same x as the auto walks. */}
       <SiteworkLayer
         lot={lot}
         setbacks={setbacks}
@@ -363,7 +362,7 @@ const LAWN_TEXTURE: THREE.CanvasTexture = (() => {
 // centered crosswalk along the lot's FRONT edge (z = 0 in lot-local space).
 // Always rendered when there's a lot. Deterministic — no AI control.
 // Single orchestrator for everything that touches the ground plane: streetscape,
-// lawn, lot pad, setback envelope, manual walkways, auto walks/driveway, stoops.
+// lawn, lot pad, setback envelope, manual walkways, auto walks, stoops.
 // Computing paths once here keeps the curb cuts, crosswalks, and walks all
 // aligned to identical x positions. No more drifting / mismatched layouts.
 // Reads the shared debug state and registers the keyboard shortcut. The
@@ -502,7 +501,7 @@ function DebugOverlay({
         </Html>
       )}
 
-      {/* Auto path centerlines (yellow walks, orange driveway) with labels */}
+      {/* Auto path centerlines (yellow walks) with labels */}
       {autoPaths.map((p, i) => (
         <group key={`dp-${i}`}>
           <Line
@@ -510,7 +509,7 @@ function DebugOverlay({
               [p.x1, Y, p.z1],
               [p.x2, Y, p.z2],
             ]}
-            color={p.kind === "driveway" ? "#ffaa00" : "#ffff00"}
+            color="#ffff00"
             lineWidth={2}
             depthTest={false}
             renderOrder={999}
@@ -638,13 +637,11 @@ function Streetscape({
   const segCount = Math.floor(totalW / (segLen + gap));
   const startX = cx - (segCount * (segLen + gap) - gap) / 2;
 
-  // Per-path geometry for curb cuts and crosswalks. Front walks get a
-  // crosswalk so pedestrians have an obvious continuation across the street;
-  // driveways get just the curb cut (no crosswalk markings).
+  // Per-path geometry for curb cuts and crosswalks. Every path is a front
+  // walk now, so each cut also gets a crosswalk across the street.
   const cuts = paths.map((p) => {
     const cutW = p.width + 2; // a little wider than the path itself
     return {
-      kind: p.kind,
       x: p.x1, // path is straight in z, so x1 == x2
       width: p.width,
       cutW,
@@ -744,42 +741,35 @@ function Streetscape({
       })}
 
       {/* Crosswalks — one per front-walk path, aligned with the actual walk */}
-      {cuts
-        .filter((cut) => cut.kind === "front_walk")
-        .flatMap((cut) =>
-          Array.from({ length: crossStripes }).map((_, i) => {
-            const offset =
-              -crossSpan / 2 + i * (crossStripeW + crossGap) + crossStripeW / 2;
-            return (
-              <mesh
-                key={`cw-${cut.x}-${i}`}
-                position={[cut.x + offset, c.yStripe, streetCenterZ]}
-              >
-                <boxGeometry args={[crossStripeW, 0.02, crossDepth]} />
-                <meshStandardMaterial
-                  color={c.colors.crosswalk}
-                  roughness={0.6}
-                  emissive={c.colors.crosswalk}
-                  emissiveIntensity={0.1}
-                />
-              </mesh>
-            );
-          })
-        )}
+      {cuts.flatMap((cut) =>
+        Array.from({ length: crossStripes }).map((_, i) => {
+          const offset =
+            -crossSpan / 2 + i * (crossStripeW + crossGap) + crossStripeW / 2;
+          return (
+            <mesh
+              key={`cw-${cut.x}-${i}`}
+              position={[cut.x + offset, c.yStripe, streetCenterZ]}
+            >
+              <boxGeometry args={[crossStripeW, 0.02, crossDepth]} />
+              <meshStandardMaterial
+                color={c.colors.crosswalk}
+                roughness={0.6}
+                emissive={c.colors.crosswalk}
+                emissiveIntensity={0.1}
+              />
+            </mesh>
+          );
+        })
+      )}
     </group>
   );
 }
 
-// Auto-generates the connecting paths every plan needs:
-//   - 5ft concrete walk from the curb to each building's front door
-//   - 12ft asphalt driveway from the curb to the parking row (when parking exists)
-// Routes around buildings when a direct path is blocked. Skips entirely if the
-// user manually placed any walkway — explicit prompts always win.
-// Computes the auto-paths the renderer + streetscape both need to know about.
-// Hoisted so Streetscape's curb cuts and crosswalks can land at the same x as
-// the actual front walks and driveway. Returns Walkway[] in the same shape as
-// user-placed walkways (so the renderer is uniform).
-type AutoPath = Walkway & { kind: "front_walk" | "driveway"; building?: number };
+// Auto-generates a 5ft concrete walk from the curb to each building's front
+// door. Routes around buildings, parking stalls, and tree canopies. Skipped
+// when the user manually placed any walkway. Hoisted so Streetscape's curb
+// cuts can land at the same x as the actual front walks.
+type AutoPath = Walkway & { kind: "front_walk"; building?: number };
 
 const STALL_W_FT = 9;
 const STALL_D_FT = 18;
@@ -793,8 +783,7 @@ const AUTOPATH_CANOPY_R: Record<string, number> = {
   pine: 0.3,
   palm: 0.16,
 };
-// Small buffer between path edge and canopy edge so leaves don't graze the
-// driveway / walk.
+// Small buffer between path edge and canopy edge so leaves don't graze the walk.
 const TREE_PATH_BUFFER_FT = 1;
 
 // Distance from a circle to an axis-aligned rectangle. Returns true when
@@ -817,11 +806,8 @@ function computeAutoPaths(
   trees: NonNullable<SitePlan["trees"]>,
   hasManualWalks: boolean
 ): AutoPath[] {
-  // Manual walks suppress the auto front-walks (the user/agent has chosen
-  // their own pedestrian routing). They do NOT suppress the auto-driveway —
-  // a driveway connects parking to the street, which manual walkways
-  // typically don't model. Suppressing both was a bug: any manual walkway
-  // would orphan the parking lot from the curb.
+  // Manual walks suppress the auto front-walks — the user/agent has chosen
+  // their own pedestrian routing.
   const out: AutoPath[] = [];
   const buildingRects: Rect[] = buildings.map((b) => ({
     x: b.x,
@@ -835,10 +821,7 @@ function computeAutoPaths(
     w: STALL_W_FT,
     d: STALL_D_FT,
   }));
-  // Trees as circular obstacles. The auto-driveway + auto front-walks were
-  // previously plowing through any tree in their corridor because the only
-  // obstacles they checked were buildings + stalls. Shift candidates dodge
-  // these now too.
+  // Trees as circular obstacles so walks don't plow through canopies.
   const treeCircles = trees.map((t) => ({
     x: t.x,
     z: t.z,
@@ -849,13 +832,8 @@ function computeAutoPaths(
   const overlapsAnyTree = (r: Rect): boolean =>
     treeCircles.some((c) => circleOverlapsRect(c.x, c.z, c.r, r));
 
-  const obstaclesFor = (kind: "walk" | "drive"): Rect[] =>
-    kind === "walk"
-      ? // Walks must avoid both buildings and parking (cars block walks)
-        [...buildingRects, ...stallRects]
-      : // Driveways may pass through parking (that's the destination), but
-        // not through buildings
-        buildingRects;
+  // Walks must avoid both buildings and parking stalls — cars block walks.
+  const walkObstacles: Rect[] = [...buildingRects, ...stallRects];
 
   // ── Front walks: curb (z = -8) → each building's door
   // Skipped entirely if the agent placed manual walkways — they take over
@@ -865,7 +843,7 @@ function computeAutoPaths(
     const doorX = b.x + b.w / 2;
     if (b.z <= 0) continue;
     const walkW = 5;
-    const obstacles = obstaclesFor("walk");
+    const obstacles = walkObstacles;
     // Prefer the centered path; if blocked, slide left or right by up to 12ft
     // in 3ft increments so we still serve a building whose door is partially
     // occluded by parking.
@@ -917,158 +895,8 @@ function computeAutoPaths(
     });
   }
 
-  // ── Driveway: curb → front of parking row, routed around buildings.
-  // Prefers the side parking is actually on (not just whichever side has
-  // more clearance from buildings).
-  if (parking.length > 0) {
-    const minZ = Math.min(...parking.map((p) => p.z));
-    const frontRow = parking.filter((p) => p.z < minZ + 2);
-    if (frontRow.length > 0) {
-      const minX = Math.min(...frontRow.map((p) => p.x));
-      const maxX = Math.max(...frontRow.map((p) => p.x)) + STALL_W_FT;
-      const parkingCenterX = (minX + maxX) / 2;
-      const dwayW = 12;
-      const buildingObstacles = obstaclesFor("drive");
-
-      // Building-only check: the hard constraint (driveway can't pass
-      // through a wall). Tree dodge is a soft preference handled below.
-      const buildingClearX = (x: number): boolean => {
-        if (x < dwayW / 2 || x > lot.width - dwayW / 2) return false;
-        const r: Rect = { x: x - dwayW / 2, z: 0, w: dwayW, d: minZ };
-        return !buildingObstacles.some((o) => rectsOverlap(r, o));
-      };
-      const treeClearX = (x: number): boolean => {
-        const r: Rect = { x: x - dwayW / 2, z: 0, w: dwayW, d: minZ };
-        return !overlapsAnyTree(r);
-      };
-
-      // Prefer ordering: (1) directly aligned with parking, (2) shifted toward
-      // parking-side lot edge in 4ft steps, (3) shifted toward opposite edge
-      // as last resort.
-      const onLeftSide = parkingCenterX < lot.width / 2;
-      const candidates: number[] = [parkingCenterX];
-      const stepsToward = onLeftSide
-        ? [-4, -8, -12, -16, -20]
-        : [4, 8, 12, 16, 20];
-      const stepsAway = onLeftSide
-        ? [4, 8, 12]
-        : [-4, -8, -12];
-      for (const s of stepsToward) candidates.push(parkingCenterX + s);
-      for (const s of stepsAway) candidates.push(parkingCenterX + s);
-      // Lot-edge fallbacks
-      candidates.push(dwayW / 2 + 1);
-      candidates.push(lot.width - dwayW / 2 - 1);
-
-      // Two-pass like the front-walk: first try to find a candidate that's
-      // both building-clear AND tree-clear. If none exists, accept the first
-      // building-clear candidate so the driveway always renders — better to
-      // graze a tree canopy than fail to draw the approach.
-      let dwayX: number | null = null;
-      let dwayFallback: number | null = null;
-      for (const cx of candidates) {
-        if (!buildingClearX(cx)) continue;
-        if (dwayFallback === null) dwayFallback = cx;
-        if (!treeClearX(cx)) continue;
-        dwayX = cx;
-        break;
-      }
-      if (dwayX === null) dwayX = dwayFallback;
-      if (dwayX !== null) {
-        // Real parking lots have a back-out aisle in front of the stalls
-        // — cars approach via a driveway, turn into the aisle, then back
-        // into individual stalls. We try to model that, but ONLY emit the
-        // aisle if it doesn't overlap any building. (Otherwise we get the
-        // failure mode where parking packed against a building's rear face
-        // leaves no room for an aisle and asphalt renders under the wall.)
-        //
-        // Three cases, in priority order:
-        //   1. Extended aisle (basic aisle stretched to meet an off-center
-        //      approach) — best, creates an L-shape connecting any approach
-        //      to all stalls
-        //   2. Basic aisle (just parking row width + 3ft overshoot) — fits
-        //      in tighter layouts but won't visually connect a far-off-center
-        //      approach
-        //   3. No aisle — straight driveway from curb to row front. Used
-        //      when buildings sit right behind the parking with no aisle gap.
-        const aisleZ = Math.max(2, minZ - 6);
-        const aisleHalf = dwayW / 2;
-        // Hard constraint: aisle can never overlap a building wall.
-        const buildingOnlyBlocked = (rect: Rect): boolean =>
-          buildingObstacles.some((o) => rectsOverlap(rect, o));
-        // Soft constraint: prefer not to graze trees, but accept it if no
-        // tree-free option exists — better an aisle through a few canopies
-        // than no aisle at all.
-        const treeClearedBlocked = (rect: Rect): boolean =>
-          buildingOnlyBlocked(rect) || overlapsAnyTree(rect);
-
-        const basicAisleLeft = minX - 3;
-        const basicAisleRight = maxX + 3;
-        const extAisleLeft = Math.min(basicAisleLeft, dwayX - dwayW / 2);
-        const extAisleRight = Math.max(basicAisleRight, dwayX + dwayW / 2);
-
-        const aisleRect = (left: number, right: number): Rect => ({
-          x: left,
-          z: aisleZ - aisleHalf,
-          w: right - left,
-          d: dwayW,
-        });
-
-        let extOK = !treeClearedBlocked(aisleRect(extAisleLeft, extAisleRight));
-        let basicOK = !treeClearedBlocked(
-          aisleRect(basicAisleLeft, basicAisleRight),
-        );
-        // If trees blocked both shapes, retry with the building-only
-        // constraint so we still emit an aisle.
-        if (!extOK && !basicOK) {
-          extOK = !buildingOnlyBlocked(aisleRect(extAisleLeft, extAisleRight));
-          basicOK = !buildingOnlyBlocked(
-            aisleRect(basicAisleLeft, basicAisleRight),
-          );
-        }
-
-        if (extOK || basicOK) {
-          // Approach: curb → aisle (cut short so it tees into the aisle
-          // instead of running all the way to the stalls).
-          out.push({
-            kind: "driveway",
-            x1: dwayX,
-            z1: -8,
-            x2: dwayX,
-            z2: aisleZ,
-            width: dwayW,
-            material: "asphalt",
-          });
-          // Prefer extended; fall back to basic if extension would clip a
-          // building. Either form gives every stall direct aisle access.
-          const useLeft = extOK ? extAisleLeft : basicAisleLeft;
-          const useRight = extOK ? extAisleRight : basicAisleRight;
-          out.push({
-            kind: "driveway",
-            x1: useLeft,
-            z1: aisleZ,
-            x2: useRight,
-            z2: aisleZ,
-            width: dwayW,
-            material: "asphalt",
-          });
-        } else {
-          // No aisle fits — buildings sit right behind the parking row.
-          // Emit just the straight approach to the row front. tryX already
-          // verified this approach doesn't itself overlap a building.
-          out.push({
-            kind: "driveway",
-            x1: dwayX,
-            z1: -8,
-            x2: dwayX,
-            z2: minZ,
-            width: dwayW,
-            material: "asphalt",
-          });
-        }
-      }
-    }
-  }
-
+  // Driveways/curb-cuts into parking are intentionally omitted. Only the
+  // main road (Streetscape) and front walkways are emitted as auto-paths.
   return out;
 }
 

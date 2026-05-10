@@ -99,7 +99,13 @@ export default function SideRail() {
         className="relative h-[260px] border-b border-rule/60"
       >
         <CompartmentFire />
-        <div className="absolute inset-0">
+        {/* Slot hammer hides while the LoadingCurtain's overlay hammer is
+            on screen — otherwise the user sees two hammers during the
+            planning phase. Cross-fades back in when planning completes. */}
+        <div
+          className="absolute inset-0 transition-opacity duration-500"
+          style={{ opacity: waiting ? 0 : 1 }}
+        >
           <Hammer3D
             isLoading={waiting}
             forging={forging}
