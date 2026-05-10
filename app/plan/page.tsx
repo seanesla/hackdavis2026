@@ -6,6 +6,7 @@ import { motion } from "framer-motion";
 import { useStore } from "@/lib/store";
 import SideRail from "@/components/plan/SideRail";
 import DebugToggle from "@/components/plan/DebugToggle";
+import ViewControls from "@/components/plan/ViewControls";
 
 const Scene = dynamic(() => import("@/components/Scene"), { ssr: false });
 const AccentGrainient = dynamic(
@@ -69,6 +70,7 @@ function PlanInner() {
       >
         <Scene />
         <DebugToggle />
+        <ViewControls />
       </motion.main>
       <SideRail />
     </div>

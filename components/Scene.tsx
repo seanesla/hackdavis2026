@@ -11,6 +11,7 @@ import * as THREE from "three";
 import SitePlanMesh from "./SitePlanMesh";
 import { useStore } from "@/lib/store";
 import { useAccent } from "@/lib/accent";
+import { useViewControls } from "@/lib/viewControls";
 import type { SitePlan } from "@/lib/types";
 
 type Props = { siteplan?: SitePlan | null };
@@ -19,6 +20,14 @@ export default function Scene({ siteplan }: Props) {
   const [interacted, setInteracted] = useState(false);
   const accent = useAccent((s) => s.accent.hex);
   const selectFloor = useStore((s) => s.selectFloor);
+  const autoRotate = useViewControls((s) => s.autoRotate);
+  const grid = useViewControls((s) => s.grid);
+
+  // Re-enabling auto-rotate from the toolbar should also clear the
+  // "user interacted" gate, otherwise the rotation would refuse to start.
+  useEffect(() => {
+    if (autoRotate) setInteracted(false);
+  }, [autoRotate]);
 
   return (
     <Canvas
@@ -28,6 +37,9 @@ export default function Scene({ siteplan }: Props) {
         alpha: true,
         antialias: true,
         powerPreference: "high-performance",
+        // Needed for the screenshot toolbar action — without preserve, the
+        // back buffer is cleared by the browser before toDataURL() runs.
+        preserveDrawingBuffer: true,
         // Logarithmic depth distribution — kills z-fighting on layered window
         // trim/glass/mullion planes at long camera distances. At ~zero cost
         // for our geometry budget. Pairs with a tighter near/far range
@@ -36,7 +48,12 @@ export default function Scene({ siteplan }: Props) {
         logarithmicDepthBuffer: true,
       }}
       camera={{ position: [120, 110, 140], fov: 38, near: 5, far: 1500 }}
-      onPointerDown={() => setInteracted(true)}
+      onPointerDown={() => {
+        setInteracted(true);
+        // First user interaction also pauses the toolbar's auto-rotate flag
+        // so the in-Scene OrbitControls and the toolbar agree on state.
+        useViewControls.getState().setAutoRotate(false);
+      }}
       onPointerMissed={() => selectFloor(null)}
       onCreated={({ gl }) => {
         gl.toneMapping = THREE.ACESFilmicToneMapping;
@@ -94,19 +111,22 @@ export default function Scene({ siteplan }: Props) {
         frames={1}
       />
 
-      {/* Drafting grid — subtle, sits just below lot to avoid z-fight. */}
-      <Grid
-        args={[600, 600]}
-        position={[0, -0.02, 0]}
-        cellSize={10}
-        cellThickness={0.4}
-        cellColor="#23232a"
-        sectionSize={50}
-        sectionThickness={0.8}
-        sectionColor="#3a3a44"
-        fadeDistance={420}
-        fadeStrength={1.4}
-      />
+      {/* Drafting grid — subtle, sits just below lot to avoid z-fight.
+          Toggleable from the view-controls toolbar. */}
+      {grid && (
+        <Grid
+          args={[600, 600]}
+          position={[0, -0.02, 0]}
+          cellSize={10}
+          cellThickness={0.4}
+          cellColor="#23232a"
+          sectionSize={50}
+          sectionThickness={0.8}
+          sectionColor="#3a3a44"
+          fadeDistance={420}
+          fadeStrength={1.4}
+        />
+      )}
 
       <SitePlanMesh siteplan={siteplan} />
 
@@ -116,12 +136,13 @@ export default function Scene({ siteplan }: Props) {
         maxDistance={800}
         maxPolarAngle={Math.PI / 2.05}
         target={[0, 0, 0]}
-        autoRotate={!interacted}
+        autoRotate={autoRotate && !interacted}
         autoRotateSpeed={0.35}
         enableDamping
         dampingFactor={0.08}
       />
       <CameraRig siteplan={siteplan} />
+      <SceneActions siteplan={siteplan} />
     </Canvas>
   );
 }
@@ -160,6 +181,120 @@ function CameraRig({ siteplan }: { siteplan?: SitePlan | null }) {
       controls.update();
     }
   });
+
+  return null;
+}
+
+// Bridges the toolbar (out-of-Canvas) to the camera + controls + renderer.
+// Toolbar buttons call into the registered actions; each action sets an
+// animation target eased in over a few frames so transitions feel cohesive.
+function SceneActions({ siteplan }: { siteplan?: SitePlan | null }) {
+  const camera = useThree((s) => s.camera);
+  const gl = useThree((s) => s.gl);
+  const scene = useThree((s) => s.scene);
+  const controls = useThree((s) => s.controls) as
+    | {
+        target: THREE.Vector3;
+        update: () => void;
+        minDistance: number;
+        maxDistance: number;
+      }
+    | null;
+  const storePlan = useStore((s) => s.plan);
+  const plan = siteplan !== undefined ? siteplan : storePlan;
+  const registerActions = useViewControls((s) => s.registerActions);
+
+  const animTarget = useRef<{
+    pos: THREE.Vector3;
+    look: THREE.Vector3;
+    t: number;
+  } | null>(null);
+
+  const defaultPos = useMemo(() => {
+    if (!plan || plan.lot.width <= 0 || plan.lot.depth <= 0) {
+      return new THREE.Vector3(120, 110, 140);
+    }
+    const span = Math.max(plan.lot.width, plan.lot.depth, 40);
+    const d = span * 1.3;
+    return new THREE.Vector3(d, d * 0.85, d);
+  }, [plan?.lot.width, plan?.lot.depth]);
+
+  useFrame((_, dt) => {
+    if (!animTarget.current) return;
+    animTarget.current.t -= dt;
+    const k = 1 - Math.exp(-dt * 5);
+    camera.position.lerp(animTarget.current.pos, k);
+    if (controls?.target) {
+      controls.target.lerp(animTarget.current.look, k);
+      controls.update();
+    }
+    if (animTarget.current.t <= 0) animTarget.current = null;
+  });
+
+  useEffect(() => {
+    const dolly = (factor: number) => {
+      if (!controls) return;
+      const dir = camera.position.clone().sub(controls.target);
+      const dist = dir.length();
+      const next = THREE.MathUtils.clamp(
+        dist * factor,
+        controls.minDistance,
+        controls.maxDistance,
+      );
+      dir.setLength(next);
+      animTarget.current = {
+        pos: controls.target.clone().add(dir),
+        look: controls.target.clone(),
+        t: 0.4,
+      };
+    };
+
+    registerActions({
+      zoomIn: () => dolly(0.7),
+      zoomOut: () => dolly(1.4),
+      reset: () => {
+        animTarget.current = {
+          pos: defaultPos.clone(),
+          look: new THREE.Vector3(0, 0, 0),
+          t: 0.7,
+        };
+      },
+      topDown: () => {
+        const span = Math.max(
+          plan?.lot.width ?? 80,
+          plan?.lot.depth ?? 80,
+          40,
+        );
+        animTarget.current = {
+          // Tiny offset so OrbitControls doesn't gimbal-lock at the exact pole.
+          pos: new THREE.Vector3(0.01, span * 1.6, 0.01),
+          look: new THREE.Vector3(0, 0, 0),
+          t: 0.7,
+        };
+      },
+      isometric: () => {
+        const span = Math.max(
+          plan?.lot.width ?? 80,
+          plan?.lot.depth ?? 80,
+          40,
+        );
+        const d = span * 1.2;
+        animTarget.current = {
+          pos: new THREE.Vector3(d, d, d),
+          look: new THREE.Vector3(0, 0, 0),
+          t: 0.7,
+        };
+      },
+      screenshot: () => {
+        gl.render(scene, camera);
+        const url = gl.domElement.toDataURL("image/png");
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `siteplan-${Date.now()}.png`;
+        a.click();
+      },
+    });
+  }, [registerActions, camera, controls, gl, scene, defaultPos, plan]);
 
   return null;
 }
