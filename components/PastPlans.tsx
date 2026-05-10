@@ -21,6 +21,7 @@ async function pushNotesToMemory(plan: PastPlan, notes: string): Promise<void> {
         prompt: plan.prompt,
         sitePlan: plan.sitePlan,
         notes,
+        kind: "note-update",
       }),
     });
     const d = await r.json();

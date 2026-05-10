@@ -42,28 +42,40 @@ export type SaveResult = {
   ok: boolean;
 };
 
+export type SaveKind = "new" | "note-update";
+
 export async function saveSession(
   userId: string,
   threadId: string | null,
   prompt: string,
   sitePlan: SitePlan,
   notes?: string,
+  kind: SaveKind = "new",
 ): Promise<SaveResult> {
   const client = getClient();
   if (!client) return { threadId, ok: false };
 
   try {
-    const content = [
-      `Save this site planning session for user ${userId}.`,
-      `User prompt: ${prompt}`,
-      notes ? `User notes about this plan: ${notes}` : "",
-      `Resulting SitePlan JSON:`,
-      JSON.stringify(sitePlan),
-      `Summary: ${summarize(sitePlan)}.`,
-      `Acknowledge briefly. Future requests on this thread may ask you to recall past sessions, describe patterns in this user's preferences, or answer chat questions about their history.`,
-    ]
-      .filter(Boolean)
-      .join("\n");
+    const content =
+      kind === "note-update"
+        ? [
+            `The user added a note to an existing plan (NOT a new plan):`,
+            `Original prompt was: "${prompt}"`,
+            `Note: ${notes ?? ""}`,
+            `Plan summary unchanged: ${summarize(sitePlan)}.`,
+            `Acknowledge briefly. When asked about plan counts later, treat this as the SAME plan, not a new one.`,
+          ].join("\n")
+        : [
+            `Save this site planning session for user ${userId}.`,
+            `User prompt: ${prompt}`,
+            notes ? `User notes about this plan: ${notes}` : "",
+            `Resulting SitePlan JSON:`,
+            JSON.stringify(sitePlan),
+            `Summary: ${summarize(sitePlan)}.`,
+            `Acknowledge briefly. Future requests on this thread may ask you to recall past sessions, describe patterns in this user's preferences, or answer chat questions about their history.`,
+          ]
+            .filter(Boolean)
+            .join("\n");
 
     const response = await client.sendMessage({
       content,

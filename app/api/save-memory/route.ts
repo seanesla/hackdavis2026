@@ -20,6 +20,7 @@ export async function POST(req: NextRequest) {
     prompt?: string;
     sitePlan?: SitePlan;
     notes?: string;
+    kind?: "new" | "note-update";
   };
   try {
     body = await req.json();
@@ -27,7 +28,7 @@ export async function POST(req: NextRequest) {
     return Response.json({ error: "Body must be JSON" }, { status: 400 });
   }
 
-  const { userId, threadId, prompt, sitePlan, notes } = body;
+  const { userId, threadId, prompt, sitePlan, notes, kind } = body;
   if (!userId || typeof userId !== "string") {
     return Response.json({ error: "userId required" }, { status: 400 });
   }
@@ -44,6 +45,7 @@ export async function POST(req: NextRequest) {
     prompt,
     sitePlan,
     typeof notes === "string" ? notes : undefined,
+    kind === "note-update" ? "note-update" : "new",
   );
 
   return Response.json({ ok: result.ok, threadId: result.threadId });
