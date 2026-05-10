@@ -17,6 +17,7 @@ import {
   useRecognizer,
 } from "@/lib/speech";
 import MuteToggle from "@/components/voice/MuteToggle";
+import ConversationScreen from "@/components/voice/ConversationScreen";
 
 type AnswerValue = number | BuildingLayout | VoiceMaterial | VoiceUseType;
 
@@ -378,92 +379,78 @@ export default function InterviewFlow() {
   const currentQ =
     interviewIndex < INTERVIEW_Q.length ? INTERVIEW_Q[interviewIndex] : null;
 
-  return (
-    <motion.div
-      initial={{ opacity: 0 }}
-      animate={{ opacity: phase === "done" ? 0 : 1 }}
-      transition={{ duration: phase === "done" ? 1.2 : 0.4 }}
-      className={`absolute inset-0 z-30 flex flex-col items-center justify-between px-6 py-10 ${
-        phase === "done" ? "pointer-events-none" : ""
-      }`}
-    >
-      <div className="w-full max-w-3xl flex items-start justify-between pointer-events-auto">
-        <span className="font-mono text-[10px] uppercase tracking-[0.25em] text-mute">
-          interview · question {Math.min(interviewIndex + 1, INTERVIEW_Q.length)} of{" "}
-          {INTERVIEW_Q.length}
-        </span>
-      </div>
+  const statusText =
+    phase === "listening" && muted
+      ? "mic muted"
+      : phase === "listening"
+      ? recognizer.listening
+        ? "you · listening"
+        : "starting mic"
+      : phase === "asking" || phase === "retrying"
+      ? "ai · speaking"
+      : phase === "confirming"
+      ? "ai · confirming"
+      : phase === "done"
+      ? "building"
+      : "ready";
 
-      <div className="w-full max-w-3xl flex flex-col items-center gap-6 pointer-events-auto">
+  const liveText =
+    phase === "listening" && muted
+      ? "mic muted — click the mic icon below to answer"
+      : phase === "listening" && !muted
+      ? recognizer.interim || (recognizer.listening ? "listening…" : "starting mic…")
+      : phase === "asking" && aiSpeaking
+      ? "ai is speaking…"
+      : phase === "retrying" && aiSpeaking
+      ? "ai is asking again…"
+      : phase === "confirming" && aiSpeaking
+      ? "ai is confirming…"
+      : "…";
+
+  const liveTone: "user" | "ai" | "muted" =
+    phase === "listening" && !muted && recognizer.listening
+      ? "user"
+      : aiSpeaking
+      ? "ai"
+      : "muted";
+
+  return (
+    <ConversationScreen
+      hidden={phase === "done"}
+      status={statusText}
+      statusActive={phase === "listening" && !muted && recognizer.listening}
+      meta={
+        <>
+          interview · question{" "}
+          {Math.min(interviewIndex + 1, INTERVIEW_Q.length)} of {INTERVIEW_Q.length}
+        </>
+      }
+      highlight={
         <AnimatePresence mode="wait">
           {currentQ ? (
-            <motion.h2
+            <motion.span
               key={currentQ.id}
               initial={{ opacity: 0, y: 8 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: -8 }}
-              transition={{ duration: 0.35 }}
-              className="text-center font-mono text-2xl sm:text-3xl text-paper leading-snug px-4 py-6 rounded-md bg-ink/60 backdrop-blur-md border border-rule"
+              transition={{ duration: 0.3 }}
+              className="block"
             >
               {currentQ.text}
-            </motion.h2>
+            </motion.span>
           ) : (
-            <motion.h2
+            <motion.span
               key="closing"
               initial={{ opacity: 0, y: 8 }}
               animate={{ opacity: 1, y: 0 }}
-              className="text-center font-mono text-2xl sm:text-3xl text-paper leading-snug px-4 py-6 rounded-md bg-ink/60 backdrop-blur-md border border-rule"
+              className="block"
             >
               building your plan…
-            </motion.h2>
+            </motion.span>
           )}
         </AnimatePresence>
-
-        <div className="min-h-[2rem] w-full flex flex-col items-center gap-2">
-          <div className="text-center font-mono text-base text-mute italic">
-            {phase === "listening" && muted && "mic muted — click the mic icon to answer"}
-            {phase === "listening" && !muted && (
-              recognizer.interim ||
-              (recognizer.listening
-                ? "listening…"
-                : "starting mic…")
-            )}
-            {phase === "asking" && aiSpeaking && "ai speaking…"}
-            {phase === "retrying" && aiSpeaking && "ai asking again…"}
-            {phase === "confirming" && aiSpeaking && "ai confirming…"}
-          </div>
-          {phase === "listening" && !muted && (
-            <div className="flex items-center gap-3">
-              <span className="flex items-center gap-1.5">
-                <span
-                  className={`h-2 w-2 rounded-full ${
-                    recognizer.listening
-                      ? "bg-accent animate-pulse"
-                      : "bg-rule"
-                  }`}
-                />
-                <span className="font-mono text-[10px] uppercase tracking-[0.2em] text-mute/70">
-                  {recognizer.listening ? "mic live" : "mic idle"}
-                </span>
-              </span>
-              <button
-                onClick={() => {
-                  stopSpeaking();
-                  setTimeout(() => recognizer.start(), 150);
-                }}
-                className="font-mono text-[10px] uppercase tracking-[0.2em] text-accent hover:text-paper transition-colors px-2 py-1 rounded border border-accent/40 hover:border-accent"
-              >
-                tap to talk
-              </button>
-            </div>
-          )}
-          {recognizer.error && phase === "listening" && (
-            <div className="font-mono text-[10px] text-red-400 text-center">
-              mic issue: {recognizer.error} — try clicking &quot;tap to talk&quot;
-            </div>
-          )}
-        </div>
-
+      }
+      highlightExtra={
         <div className="flex items-center gap-2">
           {INTERVIEW_Q.map((q, i) => (
             <div
@@ -478,41 +465,43 @@ export default function InterviewFlow() {
             />
           ))}
         </div>
-
-        {currentQ && (
-          <button
-            onClick={() => skipRef.current?.()}
-            disabled={(phase !== "listening" && phase !== "retrying") || aiSpeaking}
-            className="font-mono text-xs text-mute hover:text-accent transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-          >
-            skip →
-          </button>
-        )}
-      </div>
-
-      <div className="w-full max-w-3xl flex flex-col items-center gap-5 pointer-events-auto">
-        <div className="w-full rounded-md border border-rule bg-ink/40 backdrop-blur-md max-h-40 overflow-y-auto p-3 flex flex-col gap-1.5">
-          {transcript.length === 0 ? (
-            <span className="font-mono text-[11px] text-mute/60">
-              transcript will appear here…
-            </span>
-          ) : (
-            transcript.slice(-12).map((entry, i) => (
-              <div key={i} className="font-mono text-[11px] flex gap-2">
-                <span
-                  className={
-                    entry.who === "ai" ? "text-accent" : "text-mute"
-                  }
-                >
-                  {entry.who === "ai" ? "ai ›" : "you ›"}
-                </span>
-                <span className="text-paper/80">{entry.text}</span>
-              </div>
-            ))
-          )}
-        </div>
-
-        <div className="flex items-center gap-8">
+      }
+      transcript={transcript}
+      liveText={liveText}
+      liveTone={liveTone}
+      errorText={
+        recognizer.error && phase === "listening"
+          ? `mic issue: ${recognizer.error} — try the "tap to talk" button`
+          : null
+      }
+      inlineAction={
+        phase === "listening" && !muted ? (
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => {
+                stopSpeaking();
+                setTimeout(() => recognizer.start(), 150);
+              }}
+              className="font-mono text-[10px] uppercase tracking-[0.2em] text-accent hover:text-paper transition-colors px-2 py-1 rounded border border-accent/40 hover:border-accent"
+            >
+              tap to talk
+            </button>
+            {currentQ && (
+              <button
+                onClick={() => skipRef.current?.()}
+                disabled={
+                  (phase !== "listening" && phase !== "retrying") || aiSpeaking
+                }
+                className="font-mono text-[10px] uppercase tracking-[0.2em] text-mute hover:text-accent transition-colors px-2 py-1 disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                skip →
+              </button>
+            )}
+          </div>
+        ) : null
+      }
+      controls={
+        <>
           <MuteToggle />
           <button
             onClick={() => {
@@ -524,8 +513,8 @@ export default function InterviewFlow() {
           >
             end interview ✕
           </button>
-        </div>
-      </div>
-    </motion.div>
+        </>
+      }
+    />
   );
 }
