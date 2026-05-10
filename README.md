@@ -31,10 +31,13 @@ the frontend, agent backend, and cross-session memory are all wired end-to-end.
 
 ## scripts
 
-- `npm run dev` — start the next dev server
+- `npm run dev` — start the next dev server (Turbopack, 8GB Node heap)
+- `npm run dev:legacy` — fallback dev server using Webpack, in case Turbopack misbehaves
 - `npm run build` — production build
 - `npm run start` — run the production build
 - `npm run lint` — eslint
+- `npm run clean` — delete the `.next/` build cache (use if dev seems stuck or stale)
+- `npm run reset` — nuke `.next/`, `node_modules/`, and `package-lock.json` and reinstall (use after a system freeze instead of re-cloning)
 
 ## repo layout
 
@@ -72,9 +75,32 @@ public/
 
 ## getting started
 
+requirements:
+- **Node 22** — if you have nvm: `nvm install 22 && nvm use`
+- **at least 4 GB of free RAM** at first compile. close Chrome tabs / Discord / Spotify before running dev — the first compile of the 3D stack is heavy and can freeze a busy machine.
+
+setup:
 ```bash
+nvm use            # picks Node 22 from .nvmrc (skip if you don't use nvm)
 npm install
 npm run dev
 ```
 
 then open http://localhost:3000, type a prompt, and the mock plan animates into the 3D scene.
+
+## if `npm run dev` froze your computer
+
+short version: don't re-clone. run this instead:
+
+```bash
+npm run reset
+```
+
+that deletes `.next/`, `node_modules/`, and `package-lock.json`, then reinstalls. takes ~30 seconds. then `npm run dev` again.
+
+if it still freezes:
+1. close every other app (especially Chrome, Discord, Slack, Spotify, Docker Desktop). the first compile needs ~4 GB of free RAM.
+2. try the webpack fallback: `npm run dev:legacy`. some 3D libraries occasionally trip up Turbopack.
+3. confirm you're on Node 22: `node -v`. earlier versions have weaker memory behavior.
+
+why this happens: the project bundles a heavy 3D + animation stack (three.js, react-three-fiber, drei, ogl, framer-motion). on a busy machine with little free RAM, the first compile can OOM and lock the OS. Node now has an 8 GB heap ceiling so it'll error cleanly instead of freezing your computer — but if free RAM is below ~2 GB at compile time, that ceiling won't save you.
