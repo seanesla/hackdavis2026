@@ -32,9 +32,14 @@ function getClient(): BackboardClient | null {
 const mockStore: StoredSession[] = [];
 const threadIdByUser = new Map<string, string>();
 
+// On Vercel the function filesystem outside /tmp is read-only, and /tmp is
+// ephemeral per-instance — so disk persistence buys nothing and would crash.
+// Skip it there; rely on the in-memory map (good enough for one warm instance).
+const IS_SERVERLESS = Boolean(process.env.VERCEL);
 const THREADS_FILE = path.join(process.cwd(), ".backboard-threads.json");
 
 async function hydrateThreadFromDisk(userId: string): Promise<void> {
+  if (IS_SERVERLESS) return;
   if (threadIdByUser.has(userId)) return;
   try {
     const raw = await fs.readFile(THREADS_FILE, "utf-8");
@@ -51,6 +56,7 @@ async function hydrateThreadFromDisk(userId: string): Promise<void> {
 }
 
 async function persistThreadId(userId: string, threadId: string): Promise<void> {
+  if (IS_SERVERLESS) return;
   try {
     let obj: Record<string, string> = {};
     try {
