@@ -3,11 +3,34 @@ import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useStore } from "@/lib/store";
 import { downloadPlan } from "@/lib/exportPlan";
-import { getPlans, type PastPlan } from "@/lib/pastPlansDb";
+import { getPlans, updatePlanNotes, type PastPlan } from "@/lib/pastPlansDb";
+import { getUserId, getThreadId, setThreadId } from "@/lib/userIdentity";
 
 type Props = {
   onLoad?: (prompt: string) => void;
 };
+
+async function pushNotesToMemory(plan: PastPlan, notes: string): Promise<void> {
+  try {
+    const r = await fetch("/api/save-memory", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        userId: getUserId(),
+        threadId: getThreadId(),
+        prompt: plan.prompt,
+        sitePlan: plan.sitePlan,
+        notes,
+      }),
+    });
+    const d = await r.json();
+    if (d?.threadId && typeof d.threadId === "string") {
+      setThreadId(d.threadId);
+    }
+  } catch {
+    // best-effort
+  }
+}
 
 export default function PastPlans({ onLoad }: Props = {}) {
   const setPromptInStore = useStore((s) => s.setPrompt);
@@ -24,6 +47,8 @@ export default function PastPlans({ onLoad }: Props = {}) {
   };
   const [history, setHistory] = useState<PastPlan[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [draftNotes, setDraftNotes] = useState("");
 
   const refetch = useCallback(async (): Promise<void> => {
     try {
@@ -47,6 +72,28 @@ export default function PastPlans({ onLoad }: Props = {}) {
       window.removeEventListener("focus", refetch);
     };
   }, [refetch]);
+
+  const startEdit = (s: PastPlan) => {
+    setEditingId(s.id);
+    setDraftNotes(s.notes ?? "");
+  };
+
+  const cancelEdit = () => {
+    setEditingId(null);
+    setDraftNotes("");
+  };
+
+  const saveNotes = async (s: PastPlan) => {
+    const notes = draftNotes.trim();
+    const updated = await updatePlanNotes(s.id, notes);
+    if (updated) {
+      setHistory((h) =>
+        h ? h.map((p) => (p.id === s.id ? updated : p)) : h,
+      );
+      void pushNotesToMemory(updated, notes);
+    }
+    cancelEdit();
+  };
 
   return (
     <div className="w-full max-w-2xl space-y-2">
@@ -73,39 +120,88 @@ export default function PastPlans({ onLoad }: Props = {}) {
       )}
 
       <div className="space-y-1.5">
-        {history?.map((s) => (
-          <div
-            key={s.id}
-            className="flex items-start gap-2 px-3 py-2 rounded border border-rule/60 bg-ink/40 backdrop-blur-md"
-          >
-            <p className="flex-1 font-mono text-xs sm:text-[13px] text-mute line-clamp-2">
-              {s.prompt}
-            </p>
-            <button
-              onClick={() =>
-                downloadPlan({ prompt: s.prompt, plan: s.sitePlan, steps: [] })
-              }
-              title="download this plan as a JSON file"
-              className="shrink-0 font-mono text-[10px] uppercase tracking-[0.2em] text-mute hover:text-accent transition-colors px-2 py-1"
+        {history?.map((s) => {
+          const isEditing = editingId === s.id;
+          return (
+            <div
+              key={s.id}
+              className="rounded border border-rule/60 bg-ink/40 backdrop-blur-md"
             >
-              export ↓
-            </button>
-            <button
-              onClick={() => handleOpenSaved(s)}
-              title="open the saved plan instantly (no api call)"
-              className="shrink-0 font-mono text-[10px] uppercase tracking-[0.2em] text-mute hover:text-accent transition-colors px-2 py-1"
-            >
-              open ↗
-            </button>
-            <button
-              onClick={() => handleLoadPrompt(s.prompt)}
-              title="put this prompt back in the input (will call gemini again)"
-              className="shrink-0 font-mono text-[10px] uppercase tracking-[0.2em] text-mute/70 hover:text-accent transition-colors px-2 py-1"
-            >
-              re-run ↵
-            </button>
-          </div>
-        ))}
+              <div className="flex items-start gap-2 px-3 py-2">
+                <p className="flex-1 font-mono text-xs sm:text-[13px] text-mute line-clamp-2">
+                  {s.prompt}
+                </p>
+                <button
+                  onClick={() =>
+                    downloadPlan({ prompt: s.prompt, plan: s.sitePlan, steps: [] })
+                  }
+                  title="download this plan as a JSON file"
+                  className="shrink-0 font-mono text-[10px] uppercase tracking-[0.2em] text-mute hover:text-accent transition-colors px-2 py-1"
+                >
+                  export ↓
+                </button>
+                <button
+                  onClick={() => handleOpenSaved(s)}
+                  title="open the saved plan instantly (no api call)"
+                  className="shrink-0 font-mono text-[10px] uppercase tracking-[0.2em] text-mute hover:text-accent transition-colors px-2 py-1"
+                >
+                  open ↗
+                </button>
+                <button
+                  onClick={() => handleLoadPrompt(s.prompt)}
+                  title="put this prompt back in the input (will call gemini again)"
+                  className="shrink-0 font-mono text-[10px] uppercase tracking-[0.2em] text-mute/70 hover:text-accent transition-colors px-2 py-1"
+                >
+                  re-run ↵
+                </button>
+              </div>
+
+              <div className="px-3 pb-2">
+                {isEditing ? (
+                  <div className="space-y-1.5">
+                    <textarea
+                      value={draftNotes}
+                      onChange={(e) => setDraftNotes(e.target.value)}
+                      placeholder="notes about this plan… (e.g. 'for the Brown family, modern look, $500k')"
+                      rows={2}
+                      autoFocus
+                      className="w-full font-mono text-[11px] text-mute bg-ink/30 border border-rule/40 rounded px-2 py-1 resize-none focus:outline-none focus:border-accent/60"
+                    />
+                    <div className="flex gap-1.5 justify-end">
+                      <button
+                        onClick={cancelEdit}
+                        className="font-mono text-[10px] uppercase tracking-[0.2em] text-mute/60 hover:text-mute transition-colors px-2 py-1"
+                      >
+                        cancel
+                      </button>
+                      <button
+                        onClick={() => void saveNotes(s)}
+                        className="font-mono text-[10px] uppercase tracking-[0.2em] text-accent hover:opacity-80 transition-opacity px-2 py-1"
+                      >
+                        save note
+                      </button>
+                    </div>
+                  </div>
+                ) : s.notes ? (
+                  <button
+                    onClick={() => startEdit(s)}
+                    title="edit notes"
+                    className="block w-full text-left font-mono text-[11px] text-mute/70 italic hover:text-mute transition-colors"
+                  >
+                    {s.notes}
+                  </button>
+                ) : (
+                  <button
+                    onClick={() => startEdit(s)}
+                    className="font-mono text-[10px] uppercase tracking-[0.2em] text-mute/40 hover:text-accent transition-colors"
+                  >
+                    + add note
+                  </button>
+                )}
+              </div>
+            </div>
+          );
+        })}
       </div>
     </div>
   );

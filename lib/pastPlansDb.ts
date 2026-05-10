@@ -6,6 +6,7 @@ export type PastPlan = {
   prompt: string;
   sitePlan: SitePlan;
   createdAt: string;
+  notes?: string;
 };
 
 const DB_NAME = "parcel";
@@ -98,6 +99,29 @@ export async function savePlan(
     }
   } catch {
     // best-effort: past plans not critical
+  }
+}
+
+export async function updatePlanNotes(
+  id: string,
+  notes: string,
+): Promise<PastPlan | null> {
+  if (typeof indexedDB === "undefined") return null;
+  try {
+    const db = await openDb();
+    const readTx = db.transaction(STORE, "readonly");
+    const existing = (await reqResult(
+      readTx.objectStore(STORE).get(id),
+    )) as PastPlan | undefined;
+    await txDone(readTx);
+    if (!existing) return null;
+    const updated: PastPlan = { ...existing, notes };
+    const writeTx = db.transaction(STORE, "readwrite");
+    writeTx.objectStore(STORE).put(updated);
+    await txDone(writeTx);
+    return updated;
+  } catch {
+    return null;
   }
 }
 

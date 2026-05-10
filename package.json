@@ -19,6 +19,7 @@
     "@google/genai": "^2.0.1",
     "@react-three/drei": "^10.7.7",
     "@react-three/fiber": "^9.6.1",
+    "backboard-sdk": "^1.5.14",
     "framer-motion": "^12.38.0",
     "next": "16.2.6",
     "ogl": "^1.0.11",

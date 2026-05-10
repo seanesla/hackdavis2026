@@ -8,6 +8,7 @@ import {
 import { TOOLS } from "@/lib/tools";
 import { TOOL_DECLARATIONS, ALLOWED_TOOL_NAMES } from "@/lib/toolDeclarations";
 import { isInsideSetbacks } from "@/lib/geometry";
+import { getPreferences } from "@/lib/backboard";
 import { rateLimit, rateLimitResponse } from "@/lib/rateLimit";
 import type { SitePlan, Step } from "@/lib/types";
 
@@ -258,9 +259,13 @@ export async function POST(req: Request) {
 
   let prompt: string;
   let history: HistoryItem[] = [];
+  let threadId: string | null = null;
   try {
     const body = await req.json();
     prompt = typeof body?.prompt === "string" ? body.prompt : "";
+    if (typeof body?.threadId === "string" && body.threadId) {
+      threadId = body.threadId;
+    }
     if (Array.isArray(body?.history)) {
       history = (body.history as unknown[])
         .filter(
@@ -282,10 +287,17 @@ export async function POST(req: Request) {
 
   const ai = new GoogleGenAI({ apiKey });
 
-  // Build memory context from the history the browser sent us. The browser
-  // owns persistence (IndexedDB), so the server stays stateless.
-  const memory = buildMemoryFromHistory(history);
-  const systemInstruction = memory ? `${SYSTEM_PROMPT}\n\n${memory}` : SYSTEM_PROMPT;
+  // Browser-owned memory: history list + Backboard-derived preferences.
+  // Both are best-effort — the prompt still works fine without them.
+  const recentHistory = buildMemoryFromHistory(history);
+  const preferences = await getPreferences(threadId).catch(() => "");
+  const memoryParts = [
+    recentHistory,
+    preferences ? `User design preferences (from past sessions):\n${preferences}` : "",
+  ].filter(Boolean);
+  const systemInstruction = memoryParts.length
+    ? `${SYSTEM_PROMPT}\n\n${memoryParts.join("\n\n")}`
+    : SYSTEM_PROMPT;
 
   // Conversation history. Gemini multi-turn function calling requires us to
   // append both the model's function-call turn and our function-response turn
