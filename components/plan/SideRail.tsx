@@ -13,6 +13,7 @@ export default function SideRail() {
   const { prompt, steps, running } = useStore();
   const plan = useStore((s) => s.plan);
   const runFromPrompt = useStore((s) => s.runFromPrompt);
+  const modifyFromPrompt = useStore((s) => s.modifyFromPrompt);
   const voiceSupported = useStore((s) => s.voiceSupported);
   const setVoiceSupported = useStore((s) => s.setVoiceSupported);
   const setVoiceModifyOpen = useStore((s) => s.setVoiceModifyOpen);
@@ -52,6 +53,12 @@ export default function SideRail() {
     void runFromPrompt(next);
   };
 
+  const submitModify = () => {
+    const next = draft.trim();
+    if (!next || next === prompt || running || !plan) return;
+    void modifyFromPrompt(next);
+  };
+
   return (
     <motion.aside
       initial={{ x: -40, opacity: 0 }}
@@ -86,13 +93,30 @@ export default function SideRail() {
           </div>
           <div className="flex items-center gap-3">
             {draft.trim() !== prompt.trim() && draft.trim() && !running && (
-              <button
-                type="button"
-                onClick={submitEdit}
-                className="font-mono text-[10px] uppercase tracking-[0.2em] text-accent hover:opacity-80 transition-opacity"
-              >
-                rebuild ↵
-              </button>
+              <>
+                {plan && (
+                  <button
+                    type="button"
+                    onClick={submitModify}
+                    title="apply this change on top of the existing plan (Enter)"
+                    className="font-mono text-[10px] uppercase tracking-[0.2em] text-accent hover:opacity-80 transition-opacity"
+                  >
+                    modify ↵
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={submitEdit}
+                  title={
+                    plan
+                      ? "wipe and re-plan from scratch (⌘↵)"
+                      : "draft a plan from this brief"
+                  }
+                  className="font-mono text-[10px] uppercase tracking-[0.2em] text-mute hover:text-accent transition-colors"
+                >
+                  {plan ? "rebuild" : "rebuild ↵"}
+                </button>
+              </>
             )}
             <button
               type="button"
@@ -136,7 +160,9 @@ export default function SideRail() {
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.shiftKey) {
               e.preventDefault();
-              submitEdit();
+              // Cmd/Ctrl+Enter forces a full rebuild even when a plan exists.
+              if (e.metaKey || e.ctrlKey || !plan) submitEdit();
+              else submitModify();
             }
           }}
           disabled={running}

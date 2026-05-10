@@ -13,7 +13,16 @@ import { useAccent } from "@/lib/accent";
 
 const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
 const easeOutCubic = (t: number) => 1 - Math.pow(1 - t, 3);
+const easeInQuad = (t: number) => t * t;
+const easeInCubic = (t: number) => t * t * t;
 const clamp01 = (t: number) => Math.max(0, Math.min(1, t));
+
+// Spinner lock-on angle for the forging strike. The X-axis swing only reads
+// as a "swing" if the head is OFF the X axis — at rotation.y=0 the head sits
+// on the rotation axis and barely moves. -π/4 puts the head at a 3/4 view
+// (front-right) so the strike arcs visibly down-and-back, and the directional
+// key light (top-front-right) hits the head face for clean contrast.
+const FORGING_TARGET_Y = -Math.PI / 4;
 
 // Soft glow halo: stacked inverted hulls. Each hull pushes verts outward
 // along the normal by a different distance and is rendered backside-only
@@ -135,7 +144,10 @@ function Hammer({ isLoading, forging, interactive, subtle, lightRef }: HammerPro
       }
     }
 
-    return { centeredScene: cloned, scale: 2.6 / maxDim };
+    // Scale tuned for the 400×260 sidebar slot — fills ~88% of the (shorter)
+    // vertical axis so the hammer feels prominent in the wider-than-tall
+    // canvas instead of being a small silhouette with empty side margins.
+    return { centeredScene: cloned, scale: 2.9 / maxDim };
   }, [scene, accent]);
 
   // Keep the glow color tracking the accent picker live without rebuilding
@@ -181,15 +193,33 @@ function Hammer({ isLoading, forging, interactive, subtle, lightRef }: HammerPro
       let targetX = 0;
 
       if (forging && !reduced.current) {
-        // Continuous hammering at ~1.6 strikes/sec. Sharp down-stroke,
-        // softer recovery — reads as forging, not a sine wave.
-        const cycle = (t * 1.6) % 1;
-        const struck = 0.95;
-        const raised = 0.15;
-        if (cycle < 0.35) {
-          targetX = lerp(raised, struck, easeOutCubic(cycle / 0.35));
+        // Realistic hammer dynamics: anticipation lean-back → fast accelerating
+        // strike → recoil bounce off the work → slow recovery to neutral.
+        // Asymmetric phase weights make the impact moment feel like an impact
+        // instead of a sine wave: most of the cycle is the slow recovery so
+        // each strike reads as a deliberate, weighted blow.
+        const cycle = (t * 1.4) % 1;
+        const raised = 0.15; // neutral pose
+        const peak = -0.30; // wind-up apex (head leaned BACK / up)
+        const struck = 1.10; // strike apex (head fully down)
+        const recoil = 0.55; // bounce-off position after impact
+
+        if (cycle < 0.20) {
+          // 0-20% — wind-up: slow lean back. easeIn so it accelerates as it
+          // reaches the apex, telegraphing the incoming strike.
+          targetX = lerp(raised, peak, easeInQuad(cycle / 0.20));
+        } else if (cycle < 0.32) {
+          // 20-32% — STRIKE: fast accelerating downward swing. easeInCubic
+          // so the head whips through the bottom of the arc.
+          targetX = lerp(peak, struck, easeInCubic((cycle - 0.20) / 0.12));
+        } else if (cycle < 0.45) {
+          // 32-45% — recoil: quick bounce off the work. easeOut so the
+          // bounce is sharp at impact and decays.
+          targetX = lerp(struck, recoil, easeOutCubic((cycle - 0.32) / 0.13));
         } else {
-          targetX = lerp(struck, raised, easeOutCubic((cycle - 0.35) / 0.65));
+          // 45-100% — recovery: slow settle back to neutral, ready for the
+          // next swing. Long phase so the strike feels weighted, not frantic.
+          targetX = lerp(recoil, raised, easeOutCubic((cycle - 0.45) / 0.55));
         }
       } else if (submitting && submitElapsed >= 0 && !reduced.current) {
         if (submitElapsed < 0.25) {
@@ -201,7 +231,10 @@ function Hammer({ isLoading, forging, interactive, subtle, lightRef }: HammerPro
         }
       }
 
-      const k = forging ? 0.32 : 0.18;
+      // Higher damping during forging so the strike accel/recoil shape
+      // actually reads — more damping would smear the impact moment into
+      // a smooth sine wave again.
+      const k = forging ? 0.45 : 0.18;
       strike.current.rotation.x = lerp(strike.current.rotation.x, targetX, k);
     }
 
@@ -212,8 +245,21 @@ function Hammer({ isLoading, forging, interactive, subtle, lightRef }: HammerPro
       targetSpin = lerp(baseSpin, peakSpin, easeOutCubic(ramp));
     }
     spinVel.current = lerp(spinVel.current, targetSpin, 0.1);
-    if (spinner.current && !reduced.current && !forging) {
-      spinner.current.rotation.y += spinVel.current * dt60;
+    if (spinner.current) {
+      if (forging && !reduced.current) {
+        // Forging spin lock — when hammering, snap the head to FORGING_TARGET_Y
+        // along the SHORTEST arc, so the strike is always seen from the same
+        // 3/4 angle. Without this, the strike fires off at whatever random
+        // accumulated rotation the idle spin happened to be at (often hiding
+        // the head behind the handle).
+        const cur = spinner.current.rotation.y;
+        const TWO_PI = Math.PI * 2;
+        const winds = Math.round((cur - FORGING_TARGET_Y) / TWO_PI);
+        const target = FORGING_TARGET_Y + winds * TWO_PI;
+        spinner.current.rotation.y = lerp(cur, target, 0.18);
+      } else if (!reduced.current) {
+        spinner.current.rotation.y += spinVel.current * dt60;
+      }
     }
 
     if (drift.current) {

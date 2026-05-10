@@ -21,6 +21,12 @@ const SIDEBAR_SCALE = 1;
 const FALLBACK_W = 400;
 const FALLBACK_H = 260;
 
+// Horizontal nudge applied to the center pose on /plan, so the drafting
+// hammer reads as centered within the *visible scene area* (right of the
+// SideRail) instead of within the whole viewport. The SideRail occupies
+// `left-4 w-[400px]` = 16+400 = 416px on the left; half that is 208.
+const PLAN_CENTER_NUDGE_X = 208;
+
 type Slot = "center" | "sidebar" | "hidden";
 
 type Rect = { x: number; y: number; w: number; h: number };
@@ -103,12 +109,16 @@ export default function FloatingHammer() {
     return "hidden";
   }, [waiting, pathname]);
 
+  const onPlan = pathname?.startsWith("/plan") ?? false;
+
   const { centerX, centerY } = useMemo(
     () => ({
-      centerX: (vw - slotRect.w * CENTER_SCALE) / 2,
+      centerX:
+        (vw - slotRect.w * CENTER_SCALE) / 2 +
+        (onPlan ? PLAN_CENTER_NUDGE_X : 0),
       centerY: (vh - slotRect.h * CENTER_SCALE) / 2,
     }),
-    [vw, vh, slotRect.w, slotRect.h],
+    [vw, vh, slotRect.w, slotRect.h, onPlan],
   );
 
   const target = useMemo(() => {

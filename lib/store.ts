@@ -99,6 +99,7 @@ type State = {
   setPrompt: (s: string) => void;
   setLoading: (b: boolean) => void;
   runFromPrompt: (p: string) => Promise<void>;
+  modifyFromPrompt: (p: string) => Promise<void>;
   runFromInterview: (answers: InterviewAnswers) => Promise<void>;
   loadImportedPlan: (data: { plan: SitePlan; steps?: Step[]; prompt?: string }) => void;
   reset: () => void;
@@ -316,6 +317,127 @@ export const useStore = create<State>((set, get) => {
     });
   };
 
+  const modifyFromPrompt = async (p: string): Promise<void> => {
+    if (get().running) return;
+    const current = get().plan;
+    if (!current) {
+      // No existing plan to modify — fall through to a fresh draft.
+      return runFromPrompt(p);
+    }
+    const myRunId = ++runId;
+
+    // Modify mode preserves plan/floorPlans/interiors. Existing building
+    // indices stay stable because the route refuses set_lot and other tools
+    // only append, so cached interiors for buildings 0..N-1 remain valid.
+    set({
+      running: true,
+      error: null,
+      prompt: p,
+    });
+
+    let data: {
+      ok: boolean;
+      stages?: Stage[];
+      plan?: SitePlan | null;
+      error?: string;
+      retryAfterSeconds?: number | null;
+    };
+
+    try {
+      const history = (await getPlans()).map((s) => ({
+        prompt: s.prompt,
+        sitePlan: s.sitePlan,
+      }));
+      const res = await fetch("/api/plan", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          prompt: p,
+          basePlan: current,
+          history,
+          threadId: getThreadId(),
+        }),
+      });
+      data = await res.json();
+    } catch (err) {
+      if (myRunId !== runId) return;
+      const message = err instanceof Error ? err.message : "Network error";
+      set((s) => ({
+        running: false,
+        loading: false,
+        error: message,
+        steps: [...s.steps, { tool: "error", note: message, ok: false }],
+      }));
+      return;
+    }
+
+    if (myRunId !== runId) return;
+
+    if (!data.ok) {
+      const message = data.retryAfterSeconds
+        ? `${data.error} Retry in ~${data.retryAfterSeconds}s.`
+        : data.error ?? "Modify failed.";
+      set((s) => ({
+        running: false,
+        loading: false,
+        error: message,
+        steps: [...s.steps, { tool: "error", note: message, ok: false }],
+      }));
+      return;
+    }
+
+    const stages = data.stages ?? [];
+    if (stages.length === 0) {
+      set((s) => ({
+        running: false,
+        loading: false,
+        error: "Agent returned no steps.",
+        steps: [
+          ...s.steps,
+          { tool: "error", note: "Agent returned no steps.", ok: false },
+        ],
+      }));
+      return;
+    }
+
+    const finalPlan = stages[stages.length - 1]?.plan ?? data.plan ?? current;
+    if (finalPlan) {
+      void savePlan(p, finalPlan);
+      void fetch("/api/save-memory", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          userId: getUserId(),
+          threadId: getThreadId(),
+          prompt: p,
+          sitePlan: finalPlan,
+        }),
+      })
+        .then((r) => r.json())
+        .then((d) => {
+          if (d?.threadId && typeof d.threadId === "string") {
+            setThreadId(d.threadId);
+          }
+        })
+        .catch(() => {});
+    }
+
+    // Append new stages on top of existing steps so the modify trail is
+    // visible alongside the original draft.
+    stages.forEach((stage, i) => {
+      setTimeout(() => {
+        if (myRunId !== runId) return;
+        set((s) => ({
+          steps: [...s.steps, stage.step],
+          plan: stage.plan,
+        }));
+        if (i === stages.length - 1) {
+          set({ running: false, loading: false });
+        }
+      }, STEP_INTERVAL_MS * (i + 1));
+    });
+  };
+
   return {
     plan: null,
     steps: [],
@@ -357,6 +479,7 @@ export const useStore = create<State>((set, get) => {
     },
 
     runFromPrompt,
+    modifyFromPrompt,
 
     loadImportedPlan: (data) => {
       // Invalidate any in-flight stage replays so they don't overwrite the
@@ -515,6 +638,7 @@ export const useStore = create<State>((set, get) => {
         storyIndex,
         structureType: b.structure_type ?? "office",
         material: b.material ?? "concrete",
+        program: b.program,
       });
 
       const existing = interiors[key];
@@ -593,6 +717,7 @@ export const useStore = create<State>((set, get) => {
             storyIndex: si,
             structureType: b.structure_type ?? "office",
             material: b.material ?? "concrete",
+            program: b.program,
           });
           if (seen.has(key)) continue;
           seen.add(key);

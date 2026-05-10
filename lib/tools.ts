@@ -6,6 +6,7 @@ import {
   BUILDING_MATERIALS,
   BUSH_VARIETIES,
   FENCE_STYLES,
+  POOL_SHAPES,
   STREET_PROPS,
   STRUCTURE_TYPES,
   TREE_SPECIES,
@@ -14,6 +15,7 @@ import {
   type BushVariety,
   type Fence,
   type FenceStyle,
+  type PoolShape,
   type SitePlan,
   type Building,
   type BuildingMaterial,
@@ -122,6 +124,13 @@ export const place_building: ToolFn = (plan, args) => {
     );
   }
 
+  // Free-form program label, normalized to a short snippet so it stays a
+  // useful interior-LLM hint without becoming a paragraph.
+  const program: string | undefined =
+    typeof args.program === "string" && args.program.trim()
+      ? args.program.trim().toLowerCase().slice(0, 64)
+      : undefined;
+
   if (x === null || z === null || w === null || d === null || stories === null) {
     return fail(plan, "place_building requires numeric x, z, w, d, stories.");
   }
@@ -146,6 +155,7 @@ export const place_building: ToolFn = (plan, args) => {
     stories,
     ...(material ? { material } : {}),
     ...(structure_type ? { structure_type } : {}),
+    ...(program ? { program } : {}),
   };
   const existing = plan.buildings ?? [];
   if (rectsOverlapAny(newBuilding, existing)) {
@@ -165,7 +175,7 @@ export const place_building: ToolFn = (plan, args) => {
   const idx = next.buildings!.length;
   return ok(
     next,
-    `Placed building #${idx}: ${w}x${d} ft, ${stories}-story${structure_type ? ` ${structure_type}` : ""}${material ? `, ${material}` : ""}, front-left corner at (${x}, ${z}). Footprint x in [${x}, ${x + w}], z in [${z}, ${z + d}]. Total buildings now: ${idx}.`
+    `Placed building #${idx}: ${w}x${d} ft, ${stories}-story${structure_type ? ` ${structure_type}` : ""}${material ? `, ${material}` : ""}${program ? `, program="${program}"` : ""}, front-left corner at (${x}, ${z}). Footprint x in [${x}, ${x + w}], z in [${z}, ${z + d}]. Total buildings now: ${idx}.`
   );
 };
 
@@ -228,26 +238,50 @@ export const place_parking: ToolFn = (plan, args) => {
   let blocked = 0;
   let rowsUsed = 0;
 
-  // Greedy multi-row pack: scan rows back-to-front (closest to back setback
-  // first), columns left-to-right within each row. Stalls (9x18 ft) abut
-  // edge-to-edge — no drive-aisle modeling, matching the simplified visual
-  // style elsewhere. Cells that overlap any building are skipped, so the
-  // packer naturally fills side strips next to the building when the
-  // requested count exceeds a single row.
+  // Multi-row pack, back-to-front. For each row, find the clear x-intervals
+  // (gaps between buildings whose z-range overlaps this row) and CENTER a
+  // run of stalls inside the largest interval. Avoids the previous failure
+  // mode where a building in the middle of a row split parking into two
+  // tiny clumps shoved against either side setback. With centered intervals,
+  // the row reads as a deliberate parking strip even when wrapped around a
+  // building.
   for (let z = maxZ - STALL_D; z >= minZ - 1e-6; z -= STALL_D) {
-    let placedThisRow = 0;
-    for (let x = minX; x + STALL_W <= maxX + 1e-6; x += STALL_W) {
-      if (stalls.length >= requested) break;
-      const stallRect = { x, z, w: STALL_W, d: STALL_D };
-      if (rectsOverlapAny(stallRect, buildings)) {
-        blocked++;
-        continue;
-      }
-      stalls.push({ x, z });
-      placedThisRow++;
-    }
-    if (placedThisRow > 0) rowsUsed++;
     if (stalls.length >= requested) break;
+
+    const rowZEnd = z + STALL_D;
+    const rowBlockers = buildings
+      .filter((b) => b.z < rowZEnd && b.z + b.d > z)
+      .sort((a, b) => a.x - b.x);
+
+    // Build clear x-intervals across this row.
+    const intervals: { x0: number; x1: number }[] = [];
+    let lastX = minX;
+    for (const b of rowBlockers) {
+      if (b.x > lastX) intervals.push({ x0: lastX, x1: Math.min(b.x, maxX) });
+      lastX = Math.max(lastX, b.x + b.w);
+    }
+    if (maxX > lastX) intervals.push({ x0: lastX, x1: maxX });
+
+    // Largest first — fill the biggest run before the skinny side strips.
+    intervals.sort((a, b) => b.x1 - b.x0 - (a.x1 - a.x0));
+
+    let placedThisRow = 0;
+    for (const iv of intervals) {
+      const remaining = requested - stalls.length;
+      if (remaining === 0) break;
+      const fits = Math.floor((iv.x1 - iv.x0) / STALL_W);
+      if (fits === 0) continue;
+      const place = Math.min(fits, remaining);
+      const blockW = place * STALL_W;
+      // Center the stall run inside this interval.
+      const startX = iv.x0 + (iv.x1 - iv.x0 - blockW) / 2;
+      for (let i = 0; i < place; i++) {
+        stalls.push({ x: startX + i * STALL_W, z });
+        placedThisRow++;
+      }
+    }
+    if (placedThisRow === 0 && rowBlockers.length > 0) blocked++;
+    if (placedThisRow > 0) rowsUsed++;
   }
 
   const next: SitePlan = { ...plan, parking: stalls };
@@ -261,12 +295,12 @@ export const place_parking: ToolFn = (plan, args) => {
     const shortBy = requested - stalls.length;
     return ok(
       next,
-      `Fit ${stalls.length} of ${requested} requested stalls across ${rowsUsed} row${rowsUsed === 1 ? "" : "s"} (greedy back-to-front, left-to-right; ${blocked} cells blocked by buildings). No more 9x18 ft cells available within setbacks; cannot fit ${shortBy} more.`
+      `Fit ${stalls.length} of ${requested} requested stalls across ${rowsUsed} row${rowsUsed === 1 ? "" : "s"} (back-to-front, centered per row; ${blocked} rows fully blocked by buildings). No more 9x18 ft cells available within setbacks; cannot fit ${shortBy} more.`
     );
   }
   return ok(
     next,
-    `Placed ${stalls.length} stalls across ${rowsUsed} row${rowsUsed === 1 ? "" : "s"}, each 9x18 ft, packed back-to-front and avoiding building footprints.`
+    `Placed ${stalls.length} stalls across ${rowsUsed} row${rowsUsed === 1 ? "" : "s"}, each 9x18 ft, centered within each row and avoiding building footprints.`
   );
 };
 
@@ -346,11 +380,11 @@ export const place_trees: ToolFn = (plan, args) => {
   const trunkR = 1.2;
 
   // Effective inset depends on whether the chosen side is already fenced.
-  // Without a fence, 6ft is enough; with a fence (especially a hedge ~3.5ft
-  // thick), the candidate row needs to sit canopy + buffer farther in or
-  // every candidate gets rejected.
+  // The canopy must also stay inside the lot — otherwise an oak's ~10ft
+  // foliage radius placed at z=6 would dangle over the auto-rendered
+  // sidewalk (z<0). Use canopy + 1ft as the floor on every side.
   const canopyR = CANOPY_R[species] * height;
-  const baseInset = 6;
+  const baseInset = Math.max(6, canopyR + 1);
   const fencedSet = new Set<string>();
   for (const f of plan.fences ?? []) for (const s of f.sides) fencedSet.add(s);
   const insetFor = (side: "front" | "back" | "left" | "right"): number =>
@@ -1062,6 +1096,55 @@ export const finalize: ToolFn = (plan) => {
   );
 };
 
+// ----- place_pool -----------------------------------------------------------
+
+export const place_pool: ToolFn = (plan, args) => {
+  if (!plan) return fail(plan, "Lot not set. Call set_lot first.");
+
+  const x = num(args.x);
+  const z = num(args.z);
+  const w = num(args.w);
+  const d = num(args.d);
+  if (x === null || z === null || w === null || d === null) {
+    return fail(plan, "place_pool requires numeric x, z, w, d.");
+  }
+  if (w <= 0 || d <= 0) {
+    return fail(plan, `Pool dimensions must be positive (got ${w}x${d}).`);
+  }
+  if (x < 0 || z < 0 || x + w > plan.lot.width || z + d > plan.lot.depth) {
+    return fail(
+      plan,
+      `Pool extends outside lot. Lot is ${plan.lot.width}x${plan.lot.depth}, pool footprint at (${x}, ${z}) sized ${w}x${d}.`
+    );
+  }
+
+  const rawShape = typeof args.shape === "string" ? args.shape.toLowerCase() : null;
+  const shape: PoolShape =
+    rawShape && (POOL_SHAPES as readonly string[]).includes(rawShape)
+      ? (rawShape as PoolShape)
+      : "rectangle";
+
+  const buildings = plan.buildings ?? [];
+  const poolRect = { x, z, w, d };
+  if (rectsOverlapAny(poolRect, buildings)) {
+    const which = buildings.findIndex((b) => rectsOverlap(poolRect, b));
+    return fail(
+      plan,
+      `Pool footprint at (${x}, ${z}) ${w}x${d} overlaps building #${which + 1} at (${buildings[which].x}, ${buildings[which].z}) ${buildings[which].w}x${buildings[which].d}. Move the pool clear of every building.`
+    );
+  }
+
+  const next: SitePlan = {
+    ...plan,
+    pools: [...(plan.pools ?? []), { x, z, w, d, shape }],
+  };
+  const idx = next.pools!.length;
+  return ok(
+    next,
+    `Placed pool #${idx}: ${shape}, ${w}x${d} ft, front-left corner at (${x}, ${z}). Total pools now: ${idx}.`
+  );
+};
+
 // ----- Registry -------------------------------------------------------------
 
 export const TOOLS: Record<string, ToolFn> = {
@@ -1074,6 +1157,7 @@ export const TOOLS: Record<string, ToolFn> = {
   place_fence,
   place_street_furniture,
   place_bushes,
+  place_pool,
   finalize,
 };
 

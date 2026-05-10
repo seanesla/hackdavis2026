@@ -180,15 +180,18 @@ export function interiorCacheKey(args: {
   storyIndex: number;
   structureType: string;
   material: string;
+  program?: string;
 }): string {
   return [
-    // Bumped from v1 → v2 when rooms were added to the schema.
-    "interior-v2",
+    // v3: program added to the cache key — same footprint with different
+    // program (e.g. school vs office) must NOT collide.
+    "interior-v3",
     Math.round(args.w),
     Math.round(args.d),
     args.stories,
     args.storyIndex,
     args.structureType,
     args.material,
+    args.program ?? "",
   ].join("|");
 }

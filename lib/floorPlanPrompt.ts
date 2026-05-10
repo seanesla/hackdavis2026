@@ -37,6 +37,12 @@ const PROGRAM_BY_TYPE: Record<
     upper:
       "Same stall pattern as ground, but with both UP and DOWN ramps annotated, no entry/exit door. Stripe count should reflect the footprint dimensions.",
   },
+  garage: {
+    ground:
+      "Single open volume sized for 1-2 cars, painted stall lines on the slab (one or two 9×18 ft stalls), workbench along one wall, shelving against the back wall, big roll-up door on the front face.",
+    upper:
+      "Residential garages are single-story; render the same as ground.",
+  },
   greenhouse: {
     ground:
       "3-4 parallel planting benches, central walking aisle ~4ft wide, perimeter irrigation drip line, single entry door on the south wall, headhouse / potting area at one end.",

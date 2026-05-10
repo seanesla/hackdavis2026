@@ -25,7 +25,12 @@ export default function LoadingCurtain() {
           transition={{ duration: 0.5 }}
         >
           <motion.div
-            className="absolute left-1/2 top-[calc(50%+140px)] -translate-x-1/2 font-mono text-[11px] uppercase tracking-[0.3em] text-mute"
+            // On /plan, shift right by 208px so the text centers under the
+            // hammer in the visible scene area (right of the SideRail) rather
+            // than the whole viewport. Off /plan (landing page transition),
+            // viewport-centered is correct.
+            className="absolute -translate-x-1/2 top-[calc(50%+100px)] font-mono text-[11px] uppercase tracking-[0.3em] text-mute"
+            style={{ left: onPlan ? "calc(50% + 208px)" : "50%" }}
             animate={{ opacity: [0.4, 1, 0.4] }}
             transition={{
               duration: 1.6,
