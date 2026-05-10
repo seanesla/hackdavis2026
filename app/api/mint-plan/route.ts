@@ -10,7 +10,9 @@ import { rateLimit, rateLimitResponse } from "@/lib/rateLimit";
 import type { SitePlan } from "@/lib/types";
 
 export const runtime = "nodejs";
-export const maxDuration = 60;
+export const maxDuration = 90;
+
+const MAX_IMAGE_BASE64_BYTES = 3 * 1024 * 1024;
 
 type MintBody = {
   imageBase64?: unknown;
@@ -43,7 +45,7 @@ function attributesFromPlan(plan: SitePlan) {
 }
 
 export async function POST(req: Request) {
-  const limited = rateLimit(req, { bucket: "mint", limit: 5, windowMs: 60_000 });
+  const limited = rateLimit(req, { bucket: "mint", limit: 2, windowMs: 60_000 });
   if (!limited.ok) return rateLimitResponse(limited);
 
   let body: MintBody;
@@ -64,6 +66,12 @@ export async function POST(req: Request) {
 
   if (!imageBase64) {
     return Response.json({ ok: false, error: "imageBase64 is required." }, { status: 400 });
+  }
+  if (imageBase64.length > MAX_IMAGE_BASE64_BYTES) {
+    return Response.json(
+      { ok: false, error: "Screenshot too large. Try again at a smaller window size." },
+      { status: 413 }
+    );
   }
   if (!recipientAddress) {
     return Response.json(
@@ -138,7 +146,7 @@ export async function POST(req: Request) {
       mintAddress,
       metadataUri,
       imageUri,
-      solscanUrl: `https://solscan.io/token/${mintAddress}?cluster=devnet`,
+      explorerUrl: `https://explorer.solana.com/address/${mintAddress}?cluster=devnet`,
     });
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err);

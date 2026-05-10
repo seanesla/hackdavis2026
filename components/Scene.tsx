@@ -22,6 +22,7 @@ export default function Scene({ siteplan }: Props) {
 
   return (
     <Canvas
+      id="plan-canvas"
       shadows
       dpr={[1, 1.5]}
       gl={{

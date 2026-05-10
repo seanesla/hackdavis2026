@@ -9,7 +9,7 @@ type MintResult = {
   mintAddress: string;
   metadataUri: string;
   imageUri: string;
-  solscanUrl: string;
+  explorerUrl: string;
 };
 
 type Status =
@@ -19,9 +19,13 @@ type Status =
   | { kind: "error"; message: string };
 
 function captureCanvas(): string | null {
-  // R3F renders a single <canvas> inside the <Canvas> wrapper. There is only
-  // one canvas in the plan view, so a tagName lookup is sufficient.
-  const canvas = document.querySelector("canvas");
+  // Scope to the plan canvas explicitly so adding any other <canvas> on the
+  // page (e.g., a future effect) doesn't silently grab the wrong one.
+  const el = document.getElementById("plan-canvas");
+  const canvas =
+    el instanceof HTMLCanvasElement
+      ? el
+      : (el?.querySelector("canvas") as HTMLCanvasElement | null) ?? null;
   if (!canvas) return null;
   try {
     return canvas.toDataURL("image/png");
@@ -92,7 +96,7 @@ export default function MintNftButton() {
           mintAddress: data.mintAddress,
           metadataUri: data.metadataUri,
           imageUri: data.imageUri,
-          solscanUrl: data.solscanUrl,
+          explorerUrl: data.explorerUrl,
         },
       });
     } catch (err) {
@@ -172,12 +176,12 @@ export default function MintNftButton() {
                     </div>
                   </div>
                   <a
-                    href={status.result.solscanUrl}
+                    href={status.result.explorerUrl}
                     target="_blank"
                     rel="noreferrer"
                     className="block w-full rounded-lg border border-accent/40 bg-accent/10 hover:bg-accent/20 px-4 py-3 font-mono text-[11px] uppercase tracking-[0.2em] text-accent text-center transition-colors"
                   >
-                    view on solscan →
+                    view on solana explorer →
                   </a>
                   <div className="font-mono text-[10px] text-mute/80 text-center">
                     open Phantom (devnet) to see it in your collectibles
