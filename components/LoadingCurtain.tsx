@@ -31,12 +31,12 @@ export default function LoadingCurtain() {
           transition={{ duration: 0.5 }}
         >
           <motion.div
-            // On /plan, shift right by 208px so the text centers under the
-            // hammer in the visible scene area (right of the SideRail) rather
-            // than the whole viewport. Off /plan (landing page transition),
-            // viewport-centered is correct.
-            className="absolute -translate-x-1/2 top-[calc(50%+100px)] font-mono text-[11px] uppercase tracking-[0.3em] text-mute"
-            style={{ left: onPlan ? "calc(50% + 208px)" : "50%" }}
+            // Centered at the full viewport so it sits directly under the
+            // floating hammer (which also centers at vw/2). The SideRail is
+            // a glass overlay on the renderer, so viewport-centered reads
+            // as "centered in the scene" without snapping right whenever
+            // /plan is the active route.
+            className="absolute left-1/2 -translate-x-1/2 top-[calc(50%+100px)] font-mono text-[11px] uppercase tracking-[0.3em] text-mute"
             animate={{ opacity: [0.4, 1, 0.4] }}
             transition={{
               duration: 1.6,

@@ -263,6 +263,18 @@ function Hammer({ isLoading, forging, interactive, subtle, lightRef }: HammerPro
         const winds = Math.round((cur - FORGING_TARGET_Y) / TWO_PI);
         const target = FORGING_TARGET_Y + winds * TWO_PI;
         spinner.current.rotation.y = lerp(cur, target, 0.18);
+      } else if (submitting && !reduced.current) {
+        // Waiting / "planning…" sway. Free-running spin (next branch) is
+        // fine on the sidebar slot, but during waiting the hammer sits in
+        // the center of the visible scene right under the "planning…"
+        // text. Continuous Y-spin sends the head past π/2 every couple of
+        // seconds, which throws the visual mass sideways and reads as
+        // "hammer isn't centered with the text" even though the bbox is
+        // anchored at the right x. A bounded sin sway keeps the silhouette
+        // near face-on (head pointed at the camera) so the apparent
+        // center stays under the text, while still showing motion.
+        const sway = Math.sin(t * 0.6) * 0.22; // ±~13° around face-on
+        spinner.current.rotation.y = lerp(spinner.current.rotation.y, sway, 0.12);
       } else if (!reduced.current) {
         spinner.current.rotation.y += spinVel.current * dt60;
       }

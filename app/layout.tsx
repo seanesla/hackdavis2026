@@ -3,7 +3,6 @@ import { Geist, Geist_Mono, Bricolage_Grotesque } from "next/font/google";
 import "./globals.css";
 import AccentApplier from "@/components/AccentApplier";
 import LoadingCurtain from "@/components/LoadingCurtain";
-import FloatingHammer from "@/components/hammer/FloatingHammer";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -67,7 +66,6 @@ export default function RootLayout({
         <AccentApplier />
         {children}
         <LoadingCurtain />
-        <FloatingHammer />
       </body>
     </html>
   );
