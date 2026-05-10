@@ -13,12 +13,20 @@ function makeSheetNumber(prompt: string) {
   return `SP-${String(n).padStart(2, "0")}`;
 }
 
+const fmt = (n: number) => Math.round(n).toLocaleString("en-US");
+
 // Engineering-drawing title block — the small information rectangle in the
-// corner of every CE deliverable. Project / Drawn / Date / Scale / Sheet.
-// Anchored at bottom-right, paired with the ScaleBar directly above it so
-// the visual scale bar and the textual scale read as a single legend block.
+// corner of every CE deliverable. Project / Drawn / Date / Scale / Sheet,
+// followed by a compact "site data" row (lot area, GFA, FAR, setbacks ok)
+// — the zoning summary a planner actually scans. Used to live in a separate
+// stats panel inside the SideRail, but the steps list needs that vertical
+// space, and the title block is the conventional spot for it on a real CE
+// drawing anyway. Anchored at bottom-right, paired with the ScaleBar
+// directly above it so the visual scale bar and the textual scale read as
+// a single legend block.
 export default function TitleBlock() {
   const prompt = useStore((s) => s.prompt);
+  const plan = useStore((s) => s.plan);
   const distance = useCameraView((s) => s.distance);
   const fov = useCameraView((s) => s.fov);
   const canvasHeight = useCameraView((s) => s.canvasHeight);
@@ -44,6 +52,28 @@ export default function TitleBlock() {
   const { feet } = chooseScaleFt(distance, fov, canvasHeight);
   const scaleStr = `1” = ${feet} ft`;
 
+  // Zoning summary derived from the plan. Mirrors the old SideRail stats
+  // block but trimmed to the essentials a real CE title block would carry:
+  // lot area, gross floor area, FAR, and a setbacks compliance flag.
+  const zoning = useMemo(() => {
+    if (!plan) return null;
+    const lotArea = plan.lot.width * plan.lot.depth;
+    if (lotArea <= 0) return null;
+    const buildings = (plan.buildings ?? []).filter(
+      (b) => b.w > 0 && b.d > 0 && b.stories > 0,
+    );
+    const gfa = buildings.reduce((s, b) => s + b.w * b.d * b.stories, 0);
+    const far = gfa / lotArea;
+    const setbacksOk = buildings.every(
+      (b) =>
+        b.x >= plan.setbacks.side &&
+        b.x + b.w <= plan.lot.width - plan.setbacks.side &&
+        b.z >= plan.setbacks.front &&
+        b.z + b.d <= plan.lot.depth - plan.setbacks.back,
+    );
+    return { lotArea, gfa, far, setbacksOk };
+  }, [plan]);
+
   return (
     <div
       aria-hidden
@@ -65,6 +95,31 @@ export default function TitleBlock() {
           <dt className="text-mute uppercase tracking-[0.15em] text-[8px]">sheet</dt>
           <dd className="text-paper/90">{sheet}</dd>
         </dl>
+        {zoning && (
+          <>
+            <div className="my-1.5 border-t border-rule/40" />
+            <dl className="grid grid-cols-[max-content_1fr] gap-x-3 gap-y-0.5 font-mono text-[10px] leading-tight">
+              <dt className="text-mute uppercase tracking-[0.15em] text-[8px]">lot</dt>
+              <dd className="text-paper/90">{fmt(zoning.lotArea)} ft²</dd>
+              <dt className="text-mute uppercase tracking-[0.15em] text-[8px]">gfa</dt>
+              <dd className="text-paper/90">{fmt(zoning.gfa)} ft²</dd>
+              <dt className="text-mute uppercase tracking-[0.15em] text-[8px]">far</dt>
+              <dd className="text-paper/90">{zoning.far.toFixed(2)}</dd>
+              <dt className="text-mute uppercase tracking-[0.15em] text-[8px]">
+                setbacks
+              </dt>
+              <dd
+                className={
+                  zoning.setbacksOk
+                    ? "text-emerald-300/90"
+                    : "text-rose-300/90"
+                }
+              >
+                {zoning.setbacksOk ? "✓ ok" : "✗ violation"}
+              </dd>
+            </dl>
+          </>
+        )}
       </div>
     </div>
   );
